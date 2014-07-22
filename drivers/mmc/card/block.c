@@ -2796,7 +2796,7 @@ static int mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 	if (mmc_bus_needs_resume(card->host))
 		mmc_resume_bus(card->host);
 #endif
-		if (mmc_card_get_bkops_en_manual(card))
+		if (card->ext_csd.bkops_en)
 			mmc_stop_bkops(card);
 	}
 
