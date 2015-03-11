@@ -684,7 +684,6 @@ static void bcl_periph_mode_set(enum bcl_device_mode mode)
 		 * power state changes. Make sure we read the current SoC
 		 * and mitigate.
 		 */
-		power_supply_callback(&bcl_psy);
 		ret = power_supply_register(gbcl->dev, &bcl_psy);
 		if (ret < 0) {
 			pr_err("Unable to register bcl_psy rc = %d\n", ret);
