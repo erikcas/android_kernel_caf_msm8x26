@@ -1,0 +1,178 @@
+--- drivers/video/msm/mdss/mdss_fb.c
++++ drivers/video/msm/mdss/mdss_fb.c
+@@ -1174,6 +1311,15 @@ static int mdss_fb_resume_sub(struct msm_fb_data_type *mfd)
+ 	 * flag. If fb was in ulp state when entering suspend, then nothing
+ 	 * needs to be done.
+ 	 */
++#ifdef CONFIG_FB_MSM_MDSS_SPECIFIC_PANEL
++	/* unblank phone display if we
++	 * resume because of power key press
++	 */
++	if (mfd->unblank_kworker && pwr_pressed) {
++		pr_debug("starting unblank async from resume");
++		queue_work(mfd->unblank_kworker, &mfd->unblank_work);
++	} else
++#endif
+ 	if (mdss_panel_is_power_on(mfd->suspend.panel_power_state) &&
+ 		!mdss_panel_is_power_on_ulp(mfd->suspend.panel_power_state)) {
+ 		int unblank_flag = mdss_panel_is_power_on_interactive(
+@@ -1445,6 +1591,9 @@ static int mdss_fb_blank_blank(struct msm_fb_data_type *mfd,
+ {
+ 	int ret = 0;
+ 	int cur_power_state;
++#ifdef CONFIG_FB_MSM_MDSS_SPECIFIC_PANEL
++	struct mdss_panel_data *pdata;
++#endif
+ 
+ 	if (!mfd)
+ 		return -EINVAL;
+@@ -1472,6 +1621,9 @@ static int mdss_fb_blank_blank(struct msm_fb_data_type *mfd,
+ 	complete(&mfd->no_update.comp);
+ 
+ 	mfd->op_enable = false;
++#ifdef CONFIG_FB_MSM_MDSS_SPECIFIC_PANEL
++	pdata = dev_get_platdata(&mfd->pdev->dev);
++#endif
+ 	if (mdss_panel_is_power_off(req_power_state)) {
+ 		/* Stop Display thread */
+ 		if (mfd->disp_thread)
+@@ -1484,10 +1636,19 @@ static int mdss_fb_blank_blank(struct msm_fb_data_type *mfd,
+ 	mfd->panel_power_state = req_power_state;
+ 
+ 	ret = mfd->mdp.off_fnc(mfd);
+-	if (ret)
++	if (ret) {
+ 		mfd->panel_power_state = cur_power_state;
+-	else if (mdss_panel_is_power_off(req_power_state))
++#ifdef CONFIG_FB_MSM_MDSS_SPECIFIC_PANEL
++		if ((pdata) && (pdata->set_backlight)) {
++			mutex_lock(&mfd->bl_lock);
++			mfd->bl_level = mfd->bl_level_scaled;
++			pdata->set_backlight(pdata, mfd->bl_level);
++			mutex_unlock(&mfd->bl_lock);
++		}
++#endif
++	} else if (mdss_panel_is_power_off(req_power_state))
+ 		mdss_fb_release_fences(mfd);
++	mfd->bl_level_scaled = mfd->bl_level;
+ 	mfd->op_enable = true;
+ 	complete(&mfd->power_off_comp);
+ 
+@@ -1528,6 +1689,16 @@ static int mdss_fb_blank_unblank(struct msm_fb_data_type *mfd)
+ 			goto error;
+ 		}
+ 
++		if (backlight_led.brightness) {
++			mutex_lock(&mfd->bl_lock);
++			mfd->unset_bl_level =
++			    backlight_led.brightness >
++			    mfd->panel_info->brightness_max ?
++			    mfd->panel_info->brightness_max :
++			    backlight_led.brightness;
++			mutex_unlock(&mfd->bl_lock);
++		}
++
+ 		mfd->panel_power_state = MDSS_PANEL_POWER_ON;
+ 		mfd->panel_info->panel_dead = false;
+ 		mutex_lock(&mfd->update.lock);
+@@ -1559,6 +1730,7 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
+ 			     int op_enable)
+ {
+ 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
++	struct mdss_panel_data *pdata;
+ 	int ret = 0;
+ 	int cur_power_state, req_power_state = MDSS_PANEL_POWER_OFF;
+ 	char trace_buffer[32];
+@@ -1602,6 +1774,14 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
+ 	switch (blank_mode) {
+ 	case FB_BLANK_UNBLANK:
+ 		pr_debug("unblank called. cur pwr state=%d\n", cur_power_state);
++#ifdef CONFIG_FB_MSM_MDSS_SPECIFIC_PANEL
++		mdss_ensure_kworker_done(mfd->unblank_kworker);
++		/* if kworker was successful we are done...
++		 * but let's check and retry if not. fall thru!
++		 */
++
++	case FB_EARLY_UNBLANK:
++#endif
+ 		ret = mdss_fb_blank_unblank(mfd);
+ 		break;
+ 	case BLANK_FLAG_ULP:
+@@ -1648,6 +1828,22 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
+ 	return ret;
+ }
+ 
++static void mdss_background_unblank(struct work_struct *ws)
++{
++	int ret = -EPERM;
++	struct msm_fb_data_type *mfd;
++	mfd = container_of(ws, struct msm_fb_data_type, unblank_work);
++
++	pr_debug("unblank work running");
++
++	ret = mdss_fb_blank_sub(FB_EARLY_UNBLANK, mfd->fbi,
++				mfd->op_enable);
++	if (ret)
++		pr_warn("can't turn on display!\n");
++	else
++		fb_set_suspend(mfd->fbi, FBINFO_STATE_RUNNING);
++}
++
+ static int mdss_fb_blank(int blank_mode, struct fb_info *info)
+ {
+ 	struct mdss_panel_data *pdata;
+@@ -2094,9 +2290,30 @@ static int mdss_fb_register(struct msm_fb_data_type *mfd)
+ 	var->yoffset = 0,	/* resolution */
+ 	var->grayscale = 0,	/* No graylevels */
+ 	var->nonstd = 0,	/* standard pixel format */
+-	var->activate = FB_ACTIVATE_VBL,	/* activate it at vsync */
+-	var->height = -1,	/* height of picture in mm */
+-	var->width = -1,	/* width of picture in mm */
++	var->activate = FB_ACTIVATE_VBL;	/* activate it at vsync */
++
++#ifdef CONFIG_FB_MSM_MDSS_SPECIFIC_PANEL
++	/* height&width of picture in mm */
++	if (panel_info) {
++		if (panel_info->height)
++			var->height = panel_info->height;
++		else
++			var->height = -1;
++		if (panel_info->width)
++			var->width = panel_info->width;
++		else
++			var->width = -1;
++	} else {
++		var->height = -1;
++		var->width = -1;
++		pr_err("%s panel_info null\n", __func__);
++		return ret;
++	}
++#else
++	var->height = -1;	/* height of picture in mm */
++	var->width = -1;	/* width of picture in mm */
++#endif
++
+ 	var->accel_flags = 0,	/* acceleration flags */
+ 	var->sync = 0,	/* see FB_SYNC_* */
+ 	var->rotate = 0,	/* angle we rotate counter clockwise */
+@@ -2531,6 +2748,10 @@ static int mdss_fb_release_all(struct fb_info *info, bool release_all)
+ 		if (mfd->mdp.release_fnc)
+ 			mfd->mdp.release_fnc(mfd, true, pid);
+ 
++#ifdef CONFIG_FB_MSM_MDSS_SPECIFIC_PANEL
++		mdss_ensure_kworker_done(mfd->unblank_kworker);
++#endif
++
+ 		ret = mdss_fb_blank_sub(FB_BLANK_POWERDOWN, info,
+ 			mfd->op_enable);
+ 		if (ret) {
+@@ -3032,6 +3253,9 @@ static int __mdss_fb_perform_commit(struct msm_fb_data_type *mfd)
+ 		else
+ 			pr_warn("no kickoff function setup for fb%d\n",
+ 					mfd->index);
++#ifdef CONFIG_FB_MSM_MDSS_SPECIFIC_PANEL
++		mdss_dsi_panel_fps_data_update(mfd);
++#endif
+ 	} else {
+ 		ret = mdss_fb_pan_display_sub(&fb_backup->disp_commit.var,
+ 				&fb_backup->info);
