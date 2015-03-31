@@ -593,6 +593,12 @@ end:
 	ctrl->clk_lane_cnt = 0;
 	mdss_dsi_clk_ctrl(ctrl, DSI_ALL_CLKS, 0);
 release:
+	if (term == DSI_MDP_TERM) {
+		spin_lock_irqsave(&ctrl->mdp_lock, flags);
+		ctrl->mdp_busy = false;
+		complete_all(&ctrl->mdp_comp);
+		spin_unlock_irqrestore(&ctrl->mdp_lock, flags);
+	}
 	pr_debug("%s: ndx=%d, cnt=%d\n", __func__,
 			ctrl->ndx, ctrl->clk_lane_cnt);
 
@@ -2618,6 +2624,9 @@ irqreturn_t mdss_dsi_isr(int irq, void *ptr)
 			mdss_dsi_cfg_lane_ctrl(ctrl, BIT(28), 0);
 			dsi_send_events(ctrl, DSI_EV_STOP_HS_CLK_LANE,
 							DSI_MDP_TERM);
+		} else {
+			ctrl->mdp_busy = false;
+			complete_all(&ctrl->mdp_comp);
 		}
 		ctrl->mdp_busy = false;
 		complete_all(&ctrl->mdp_comp);
