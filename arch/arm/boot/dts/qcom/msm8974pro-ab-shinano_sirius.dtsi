@@ -359,12 +359,6 @@
 		};
 	};
 
-	qcom,ion {
-		qcom,ion-heap@20 { /* CAMERA HEAP */
-			qcom,memory-fixed = <0xb8714000 0x6400000>;
-		};
-	};
-
 	gpio_keys {
 		camera_snapshot {
 			label = "camera_snapshot";
@@ -393,6 +387,10 @@
 			debounce-interval = <10>;
 		};
 	};
+};
+
+&camera_mem {
+	reg = <0xb8714000 0x6400000>;
 };
 
 &pm8941_chg {
@@ -443,6 +441,16 @@
 		qcom,master-en = <1>;		/* Enable */
 		status = "ok";
 	};
+};
+
+&sdcc1 {
+	qcom,bus-speed-mode = "DDR50", "DDR_1p8v";
+};
+
+&sdcc2 {
+	qcom,bus-speed-mode = "SDR12", "SDR25", "SDR50", "DDR50";
+	qcom,current-limit = <400>;
+	qcom,pad-drv-on = <0x2 0x2 0x2>; /* 6mA, 6mA, 6mA */
 };
 
 &sdhc_1 {
