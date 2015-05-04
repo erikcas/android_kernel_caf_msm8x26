@@ -214,16 +214,21 @@ void mdss_fb_no_update_notify_timer_cb(unsigned long data)
 	complete(&mfd->no_update.comp);
 }
 
-void mdss_fb_bl_update_notify(struct msm_fb_data_type *mfd)
+void mdss_fb_bl_update_notify(struct msm_fb_data_type *mfd,
+		uint32_t notification_type)
 {
 	if (!mfd) {
 		pr_err("%s mfd NULL\n", __func__);
 		return;
 	}
 	mutex_lock(&mfd->update.lock);
+	if (mfd->update.is_suspend) {
+		mutex_unlock(&mfd->update.lock);
+		return;
+	}
 	if (mfd->update.ref_count > 0) {
 		mutex_unlock(&mfd->update.lock);
-		mfd->update.value = NOTIFY_TYPE_BL_UPDATE;
+		mfd->update.value = notification_type;
 		complete(&mfd->update.comp);
 		mutex_lock(&mfd->update.lock);
 	}
@@ -232,7 +237,7 @@ void mdss_fb_bl_update_notify(struct msm_fb_data_type *mfd)
 	mutex_lock(&mfd->no_update.lock);
 	if (mfd->no_update.ref_count > 0) {
 		mutex_unlock(&mfd->no_update.lock);
-		mfd->no_update.value = NOTIFY_TYPE_BL_UPDATE;
+		mfd->no_update.value = notification_type;
 		complete(&mfd->no_update.comp);
 		mutex_lock(&mfd->no_update.lock);
 	}
@@ -721,7 +726,13 @@ static int mdss_fb_blanking_mode_switch(struct msm_fb_data_type *mfd, int mode)
 	pdata = dev_get_platdata(&mfd->pdev->dev);
 
 	pdata->panel_info.dynamic_switch_pending = true;
-	mdss_fb_pan_idle(mfd);
+	ret = mdss_fb_pan_idle(mfd);
+	if (ret) {
+		pr_err("mdss_fb_pan_idle for fb%d failed. ret=%d\n",
+			mfd->index, ret);
+		pdata->panel_info.dynamic_switch_pending = false;
+		return ret;
+	}
 
 	mutex_lock(&mfd->bl_lock);
 	bl_lvl = mfd->bl_level;
@@ -879,6 +890,11 @@ static void mdss_fb_shutdown(struct platform_device *pdev)
 	struct msm_fb_data_type *mfd = platform_get_drvdata(pdev);
 
 	mfd->shutdown_pending = true;
+
+	/* wake up threads waiting on idle or kickoff queues */
+	wake_up_all(&mfd->idle_wait_q);
+	wake_up_all(&mfd->kickoff_wait_q);
+
 	lock_fb_info(mfd->fbi);
 	mdss_fb_release_all(mfd->fbi, true);
 	sysfs_notify(&mfd->fbi->dev->kobj, NULL, "show_blank_event");
@@ -1131,11 +1147,17 @@ static int mdss_fb_suspend_sub(struct msm_fb_data_type *mfd)
 	mdss_ensure_kworker_done(mfd->unblank_kworker);
 #endif
 
-	mdss_fb_pan_idle(mfd);
+	ret = mdss_fb_pan_idle(mfd);
+	if (ret) {
+		pr_warn("mdss_fb_pan_idle for fb%d failed. ret=%d\n",
+			mfd->index, ret);
+		goto exit;
+	}
+
 	ret = mdss_fb_send_panel_event(mfd, MDSS_EVENT_SUSPEND, NULL);
 	if (ret) {
 		pr_warn("unable to suspend fb%d (%d)\n", mfd->index, ret);
-		return ret;
+		goto exit;
 	}
 
 	mfd->suspend.op_enable = mfd->op_enable;
@@ -1153,18 +1175,18 @@ static int mdss_fb_suspend_sub(struct msm_fb_data_type *mfd)
 					mfd->suspend.op_enable);
 			if (ret) {
 				pr_err("can't turn off display!\n");
-				return ret;
+				goto exit;
 			}
 		}
 		mfd->op_enable = false;
 		fb_set_suspend(mfd->fbi, FBINFO_STATE_SUSPENDED);
 	}
 
+exit:
 #ifdef CONFIG_FB_MSM_MDSS_SPECIFIC_PANEL
 	pwr_pressed = false;
 #endif
-
-	return 0;
+	return ret;
 }
 
 static int mdss_fb_resume_sub(struct msm_fb_data_type *mfd)
@@ -1178,7 +1200,13 @@ static int mdss_fb_resume_sub(struct msm_fb_data_type *mfd)
 	mfd->is_power_setting = true;
 	pr_debug("mdss_fb resume index=%d\n", mfd->index);
 
-	mdss_fb_pan_idle(mfd);
+	ret = mdss_fb_pan_idle(mfd);
+	if (ret) {
+		pr_warn("mdss_fb_pan_idle for fb%d failed. ret=%d\n",
+			mfd->index, ret);
+		return ret;
+	}
+
 	ret = mdss_fb_send_panel_event(mfd, MDSS_EVENT_RESUME, NULL);
 	if (ret) {
 		pr_warn("unable to resume fb%d (%d)\n", mfd->index, ret);
@@ -1341,6 +1369,7 @@ void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
 {
 	struct mdss_panel_data *pdata;
 	u32 temp = bkl_lvl;
+	bool ad_bl_notify_needed = false;
 	bool bl_notify_needed = false;
 
 	if ((((mdss_fb_is_power_off(mfd) && mfd->dcm_state != DCM_ENTER)
@@ -1357,9 +1386,7 @@ void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
 	if ((pdata) && (pdata->set_backlight)) {
 		if (mfd->mdp.ad_calc_bl)
 			(*mfd->mdp.ad_calc_bl)(mfd, temp, &temp,
-							&bl_notify_needed);
-		if (bl_notify_needed)
-			mdss_fb_bl_update_notify(mfd);
+							&ad_bl_notify_needed);
 		if (!IS_CALIB_MODE_BL(mfd))
 			mdss_fb_scale_bl(mfd, &temp);
 		/*
@@ -1373,11 +1400,20 @@ void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
 		if (mfd->bl_level_scaled == temp) {
 			mfd->bl_level = bkl_lvl;
 		} else {
+			if (mfd->bl_level != bkl_lvl)
+				bl_notify_needed = true;
 			pr_debug("backlight sent to panel :%d\n", temp);
 			pdata->set_backlight(pdata, temp);
 			mfd->bl_level = bkl_lvl;
 			mfd->bl_level_scaled = temp;
 		}
+
+		if (ad_bl_notify_needed)
+			mdss_fb_bl_update_notify(mfd,
+					NOTIFY_TYPE_BL_AD_ATTEN_UPDATE);
+		else if (bl_notify_needed)
+			mdss_fb_bl_update_notify(mfd,
+					NOTIFY_TYPE_BL_UPDATE);
 	}
 }
 
@@ -1399,7 +1435,8 @@ void mdss_fb_update_backlight(struct msm_fb_data_type *mfd)
 				(*mfd->mdp.ad_calc_bl)(mfd, temp, &temp,
 								&bl_notify);
 			if (bl_notify)
-				mdss_fb_bl_update_notify(mfd);
+				mdss_fb_bl_update_notify(mfd,
+					NOTIFY_TYPE_BL_AD_ATTEN_UPDATE);
 			pdata->set_backlight(pdata, temp);
 			mfd->bl_level_scaled = mfd->unset_bl_level;
 			mfd->bl_updated = 1;
@@ -1502,6 +1539,11 @@ static int mdss_fb_blank_blank(struct msm_fb_data_type *mfd,
 	del_timer(&mfd->no_update.timer);
 	mfd->no_update.value = NOTIFY_TYPE_SUSPEND;
 	complete(&mfd->no_update.comp);
+	if (mfd->mdp.stop_histogram)
+		ret = (*mfd->mdp.stop_histogram)(mfd);
+	if (ret)
+		pr_err("Failed to stop histogram before suspend, fb idx = %d\n",
+			mfd->index);
 
 	mfd->op_enable = false;
 #ifdef CONFIG_FB_MSM_MDSS_SPECIFIC_PANEL
@@ -1738,10 +1780,17 @@ static void mdss_background_unblank(struct work_struct *ws)
 
 static int mdss_fb_blank(int blank_mode, struct fb_info *info)
 {
+	int ret;
 	struct mdss_panel_data *pdata;
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
 
-	mdss_fb_pan_idle(mfd);
+	ret = mdss_fb_pan_idle(mfd);
+	if (ret) {
+		pr_warn("mdss_fb_pan_idle for fb%d failed. ret=%d\n",
+			mfd->index, ret);
+		return ret;
+	}
+
 	if (mfd->op_enable == 0) {
 		if (blank_mode == FB_BLANK_UNBLANK)
 			mfd->suspend.panel_power_state = MDSS_PANEL_POWER_ON;
@@ -2570,7 +2619,13 @@ static int mdss_fb_release_all(struct fb_info *info, bool release_all)
 		pr_warn("fb%d ioctl could not finish. waited 1 sec.\n",
 			mfd->index);
 
-	mdss_fb_pan_idle(mfd);
+	/* wait only for the last release */
+	if (release_all || (mfd->ref_cnt == 1)) {
+		ret = mdss_fb_pan_idle(mfd);
+		if (ret && (ret != -ESHUTDOWN))
+			pr_warn("mdss_fb_pan_idle for fb%d failed. ret=%d ignoring.\n",
+				mfd->index, ret);
+	}
 
 	pr_debug("release_all = %s\n", release_all ? "true" : "false");
 
@@ -2936,13 +2991,16 @@ static int mdss_fb_pan_idle(struct msm_fb_data_type *mfd)
 		pr_err("%pS: wait for idle timeout commits=%d\n",
 				__builtin_return_address(0),
 				atomic_read(&mfd->commits_pending));
-		MDSS_XLOG_TOUT_HANDLER("mdp", "panic");
+		MDSS_XLOG_TOUT_HANDLER("mdp");
+		ret = -ETIMEDOUT;
 	} else if (mfd->shutdown_pending) {
 		pr_debug("Shutdown signalled\n");
-		return -ESHUTDOWN;
+		ret = -ESHUTDOWN;
+	} else {
+		ret = 0;
 	}
 
-	return 0;
+	return ret;
 }
 
 static int mdss_fb_wait_for_kickoff(struct msm_fb_data_type *mfd)
@@ -2961,13 +3019,16 @@ static int mdss_fb_wait_for_kickoff(struct msm_fb_data_type *mfd)
 				__builtin_return_address(0),
 				atomic_read(&mfd->kickoff_pending),
 				atomic_read(&mfd->commits_pending));
-		MDSS_XLOG_TOUT_HANDLER("mdp", "panic");
+		MDSS_XLOG_TOUT_HANDLER("mdp");
+		ret = -ETIMEDOUT;
 	} else if (mfd->shutdown_pending) {
 		pr_debug("Shutdown signalled\n");
-		return -ESHUTDOWN;
+		ret = -ESHUTDOWN;
+	} else {
+		ret = 0;
 	}
 
-	return 0;
+	return ret;
 }
 
 static int mdss_fb_pan_display_ex(struct fb_info *info,
@@ -2994,7 +3055,7 @@ static int mdss_fb_pan_display_ex(struct fb_info *info,
 
 	ret = mdss_fb_wait_for_kickoff(mfd);
 	if (ret) {
-		pr_err("Shutdown pending. Aborting operation\n");
+		pr_err("wait_for_kick failed. rc=%d\n", ret);
 		return ret;
 	}
 
@@ -3024,8 +3085,11 @@ static int mdss_fb_pan_display_ex(struct fb_info *info,
 	atomic_inc(&mfd->kickoff_pending);
 	wake_up_all(&mfd->commit_wait_q);
 	mutex_unlock(&mfd->mdp_sync_pt_data.sync_mutex);
-	if (wait_for_finish)
-		mdss_fb_pan_idle(mfd);
+	if (wait_for_finish) {
+		ret = mdss_fb_pan_idle(mfd);
+		if (ret)
+			pr_err("mdss_fb_pan_idle failed. rc=%d\n", ret);
+	}
 	return ret;
 }
 
@@ -3086,6 +3150,17 @@ static void mdss_fb_var_to_panelinfo(struct fb_var_screeninfo *var,
 	pinfo->lcdc.h_front_porch = var->right_margin;
 	pinfo->lcdc.h_back_porch = var->left_margin;
 	pinfo->lcdc.h_pulse_width = var->hsync_len;
+
+	if (var->sync & FB_SYNC_HOR_HIGH_ACT)
+		pinfo->lcdc.h_polarity = 0;
+	else
+		pinfo->lcdc.h_polarity = 1;
+
+	if (var->sync & FB_SYNC_VERT_HIGH_ACT)
+		pinfo->lcdc.v_polarity = 0;
+	else
+		pinfo->lcdc.v_polarity = 1;
+
 	pinfo->clk_rate = var->pixclock;
 }
 
@@ -3200,7 +3275,10 @@ static int __mdss_fb_display_thread(void *data)
 		if (kthread_should_stop())
 			break;
 
+		MDSS_XLOG(mfd->index, XLOG_FUNC_ENTRY);
 		ret = __mdss_fb_perform_commit(mfd);
+		MDSS_XLOG(mfd->index, XLOG_FUNC_EXIT);
+
 		atomic_dec(&mfd->commits_pending);
 		wake_up_all(&mfd->idle_wait_q);
 	}
@@ -3332,7 +3410,7 @@ static int mdss_fb_set_par(struct fb_info *info)
 
 	ret = mdss_fb_pan_idle(mfd);
 	if (ret) {
-		pr_err("Shutdown pending. Aborting operation\n");
+		pr_err("mdss_fb_pan_idle failed. rc=%d\n", ret);
 		return ret;
 	}
 
@@ -3811,8 +3889,9 @@ static int __ioctl_wait_idle(struct msm_fb_data_type *mfd, u32 cmd)
 		ret = mdss_fb_pan_idle(mfd);
 	}
 
-	if (ret)
-		pr_debug("Shutdown pending. Aborting operation %x\n", cmd);
+	if (ret && (ret != -ESHUTDOWN))
+		pr_err("wait_idle failed. cmd=0x%x rc=%d\n", cmd, ret);
+
 	return ret;
 }
 

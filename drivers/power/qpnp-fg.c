@@ -155,6 +155,9 @@ enum fg_mem_data_index {
 	FG_DATA_CURRENT,
 	FG_DATA_BATT_ESR,
 	FG_DATA_BATT_ESR_COUNT,
+	FG_DATA_BATT_SOC,
+	FG_DATA_CC_CHARGE,
+	FG_DATA_VINT_ERR,
 	/* values below this only gets read once per profile reload */
 	FG_DATA_CPRED_VOLTAGE,
 	FG_DATA_BATT_ID,
@@ -205,6 +208,9 @@ static struct fg_mem_data fg_data[FG_DATA_MAX] = {
 	DATA(CURRENT,         0x5CC,   3,      2,     -EINVAL),
 	DATA(BATT_ESR,        0x554,   2,      2,     -EINVAL),
 	DATA(BATT_ESR_COUNT,  0x558,   2,      2,     -EINVAL),
+	DATA(BATT_SOC,        0x56C,   1,      3,     -EINVAL),
+	DATA(CC_CHARGE,       0x570,   0,      4,     -EINVAL),
+	DATA(VINT_ERR,        0x560,   0,      4,     -EINVAL),
 	DATA(CPRED_VOLTAGE,   0x540,   0,      2,     -EINVAL),
 	DATA(BATT_ID,         0x594,   1,      1,     -EINVAL),
 	DATA(BATT_ID_INFO,    0x594,   3,      1,     -EINVAL),
@@ -338,6 +344,7 @@ struct fg_chip {
 	bool			soc_empty;
 	bool			charge_done;
 	bool			resume_soc_lowered;
+	bool			vbat_low_irq_enabled;
 	struct delayed_work	update_jeita_setting;
 	struct delayed_work	update_sram_data;
 	struct delayed_work	update_temp_work;
@@ -1283,6 +1290,22 @@ static int fg_is_batt_id_valid(struct fg_chip *chip)
 	return (fg_batt_sts & BATT_IDED) ? 1 : 0;
 }
 
+static int64_t twos_compliment_extend(int64_t val, int nbytes)
+{
+	int i;
+	int64_t mask;
+
+	mask = 0x80LL << ((nbytes - 1) * 8);
+	if (val & mask) {
+		for (i = 8; i > nbytes; i--) {
+			mask = 0xFFLL << ((i - 1) * 8);
+			val |= mask;
+		}
+	}
+
+	return val;
+}
+
 #define LSB_16B_NUMRTR		152587
 #define LSB_16B_DENMTR		1000
 #define LSB_8B		9800
@@ -1290,11 +1313,13 @@ static int fg_is_batt_id_valid(struct fg_chip *chip)
 #define DECIKELVIN	2730
 #define SRAM_PERIOD_UPDATE_MS		30000
 #define SRAM_PERIOD_NO_ID_UPDATE_MS	100
+#define FULL_PERCENT_28BIT		0xFFFFFFF
+#define FULL_PERCENT_3B			0xFFFFFF
 static void update_sram_data(struct fg_chip *chip, int *resched_ms)
 {
-	int i, rc = 0;
-	u8 reg[2];
-	s16 temp;
+	int i, j, rc = 0;
+	u8 reg[4];
+	int64_t temp;
 	int battid_valid = fg_is_batt_id_valid(chip);
 
 	fg_stay_awake(&chip->update_sram_wakeup_source);
@@ -1309,8 +1334,9 @@ static void update_sram_data(struct fg_chip *chip, int *resched_ms)
 			break;
 		}
 
-		if (fg_data[i].len > 1)
-			temp = reg[0] | (reg[1] << 8);
+		temp = 0;
+		for (j = 0; j < fg_data[i].len; j++)
+			temp |= reg[j] << (8 * j);
 
 		switch (i) {
 		case FG_DATA_OCV:
@@ -1321,6 +1347,7 @@ static void update_sram_data(struct fg_chip *chip, int *resched_ms)
 					LSB_16B_DENMTR);
 			break;
 		case FG_DATA_CURRENT:
+			temp = twos_compliment_extend(temp, fg_data[i].len);
 			fg_data[i].value = div_s64(
 					(s64)temp * LSB_16B_NUMRTR,
 					LSB_16B_DENMTR);
@@ -1339,10 +1366,24 @@ static void update_sram_data(struct fg_chip *chip, int *resched_ms)
 			if (battid_valid)
 				fg_data[i].value = reg[0];
 			break;
+		case FG_DATA_BATT_SOC:
+			fg_data[i].value = temp * 10000 / FULL_PERCENT_3B;
+			break;
+		case FG_DATA_CC_CHARGE:
+			temp = twos_compliment_extend(temp, fg_data[i].len);
+			fg_data[i].value = div64_s64(
+					temp * (int64_t)chip->nom_cap_uah,
+					FULL_PERCENT_28BIT);
+			break;
+		case FG_DATA_VINT_ERR:
+			temp = twos_compliment_extend(temp, fg_data[i].len);
+			fg_data[i].value = div64_s64(temp * chip->nom_cap_uah,
+					FULL_PERCENT_3B);
+			break;
 		};
 
 		if (fg_debug_mask & FG_MEM_DEBUG_READS)
-			pr_info("%d %d %d\n", i, temp, fg_data[i].value);
+			pr_info("%d %lld %d\n", i, temp, fg_data[i].value);
 	}
 	fg_mem_release(chip);
 
@@ -1687,7 +1728,6 @@ static int lookup_soc_for_ocv(struct fg_chip *chip, int ocv)
 	return soc;
 }
 
-#define FULL_PERCENT_3B		0xFFFFFF
 #define ESR_ACTUAL_REG		0x554
 #define BATTERY_ESR_REG		0x4F4
 #define TEMP_RS_TO_RSLOW_REG	0x514
@@ -1810,11 +1850,14 @@ static void battery_age_work(struct work_struct *work)
 
 static enum power_supply_property fg_power_props[] = {
 	POWER_SUPPLY_PROP_CAPACITY,
+	POWER_SUPPLY_PROP_CAPACITY_RAW,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_VOLTAGE_OCV,
 	POWER_SUPPLY_PROP_VOLTAGE_MAX_DESIGN,
 	POWER_SUPPLY_PROP_CHARGE_NOW,
+	POWER_SUPPLY_PROP_CHARGE_NOW_RAW,
+	POWER_SUPPLY_PROP_CHARGE_NOW_ERROR,
 	POWER_SUPPLY_PROP_CHARGE_FULL,
 	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
 	POWER_SUPPLY_PROP_TEMP,
@@ -1842,6 +1885,12 @@ static int fg_power_get_property(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY:
 		val->intval = get_prop_capacity(chip);
+		break;
+	case POWER_SUPPLY_PROP_CAPACITY_RAW:
+		val->intval = get_sram_prop_now(chip, FG_DATA_BATT_SOC);
+		break;
+	case POWER_SUPPLY_PROP_CHARGE_NOW_ERROR:
+		val->intval = get_sram_prop_now(chip, FG_DATA_VINT_ERR);
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
 		val->intval = get_sram_prop_now(chip, FG_DATA_CURRENT);
@@ -1893,6 +1942,9 @@ static int fg_power_get_property(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_NOW:
 		val->intval = chip->learning_data.cc_uah;
+		break;
+	case POWER_SUPPLY_PROP_CHARGE_NOW_RAW:
+		val->intval = get_sram_prop_now(chip, FG_DATA_CC_CHARGE);
 		break;
 	default:
 		return -EINVAL;
@@ -2293,11 +2345,23 @@ static void status_change_work(struct work_struct *work)
 				struct fg_chip,
 				status_change_work);
 
+	if (chip->status == POWER_SUPPLY_STATUS_FULL ||
+			chip->status == POWER_SUPPLY_STATUS_CHARGING) {
+		if (!chip->vbat_low_irq_enabled) {
+			enable_irq(chip->batt_irq[VBATT_LOW].irq);
+			enable_irq_wake(chip->batt_irq[VBATT_LOW].irq);
+			chip->vbat_low_irq_enabled = true;
+		}
+		if (get_prop_capacity(chip) == 100)
+			fg_configure_soc(chip);
+	} else if (chip->status == POWER_SUPPLY_STATUS_DISCHARGING) {
+		if (chip->vbat_low_irq_enabled) {
+			disable_irq_wake(chip->batt_irq[VBATT_LOW].irq);
+			disable_irq_nosync(chip->batt_irq[VBATT_LOW].irq);
+			chip->vbat_low_irq_enabled = false;
+		}
+	}
 	fg_cap_learning_check(chip);
-	if ((chip->status == POWER_SUPPLY_STATUS_FULL ||
-			chip->status == POWER_SUPPLY_STATUS_CHARGING)
-			&& get_prop_capacity(chip) == 100)
-		fg_configure_soc(chip);
 	schedule_work(&chip->update_esr_work);
 }
 
@@ -2413,7 +2477,7 @@ static void dump_sram(struct work_struct *work)
 #define MAXRSCHANGE_REG		0x434
 #define ESR_VALUE_OFFSET	1
 #define ESR_STRICT_VALUE	0x4120391F391F3019
-#define ESR_DEFAULT_VALUE	0x68005A6661C34A67
+#define ESR_DEFAULT_VALUE	0x58CD4A6761C34A67
 static void update_esr_value(struct work_struct *work)
 {
 	union power_supply_propval prop = {0, };
@@ -2479,12 +2543,29 @@ static bool is_battery_missing(struct fg_chip *chip)
 static irqreturn_t fg_vbatt_low_handler(int irq, void *_chip)
 {
 	struct fg_chip *chip = _chip;
+	int rc;
+	bool vbatt_low_sts;
 
 	if (fg_debug_mask & FG_IRQS)
 		pr_info("vbatt-low triggered\n");
 
+	if (chip->status == POWER_SUPPLY_STATUS_CHARGING) {
+		rc = fg_get_vbatt_status(chip, &vbatt_low_sts);
+		if (rc) {
+			pr_err("error in reading vbatt_status, rc:%d\n", rc);
+			goto out;
+		}
+		if (!vbatt_low_sts && chip->vbat_low_irq_enabled) {
+			if (fg_debug_mask & FG_IRQS)
+				pr_info("disabling vbatt_low irq\n");
+			disable_irq_wake(chip->batt_irq[VBATT_LOW].irq);
+			disable_irq_nosync(chip->batt_irq[VBATT_LOW].irq);
+			chip->vbat_low_irq_enabled = false;
+		}
+	}
 	if (chip->power_supply_registered)
 		power_supply_changed(&chip->bms_psy);
+out:
 	return IRQ_HANDLED;
 }
 
@@ -2800,6 +2881,8 @@ static void update_cc_cv_setpoint(struct fg_chip *chip)
 #define FIRST_EST_DONE_BIT		BIT(5)
 #define MAX_TRIES_FIRST_EST		3
 #define FIRST_EST_WAIT_MS		2000
+#define FG_PROFILE_LEN			128
+#define PROFILE_COMPARE_LEN		32
 static int fg_batt_profile_init(struct fg_chip *chip)
 {
 	int rc = 0, ret;
@@ -2807,7 +2890,7 @@ static int fg_batt_profile_init(struct fg_chip *chip)
 	struct device_node *node = chip->spmi->dev.of_node;
 	struct device_node *batt_node, *profile_node;
 	const char *data, *batt_type_str, *old_batt_type;
-	bool tried_again = false, vbat_in_range;
+	bool tried_again = false, vbat_in_range, profiles_same;
 	u8 reg = 0;
 
 wait:
@@ -2854,6 +2937,12 @@ wait:
 		goto no_profile;
 	}
 
+	if (len != FG_PROFILE_LEN) {
+		pr_err("battery profile incorrect size: %d\n", len);
+		rc = -EINVAL;
+		goto fail;
+	}
+
 	rc = of_property_read_string(profile_node, "qcom,battery-type",
 					&batt_type_str);
 	if (rc) {
@@ -2888,11 +2977,13 @@ wait:
 	vbat_in_range = abs(fg_data[FG_DATA_VOLTAGE].value
 				- fg_data[FG_DATA_CPRED_VOLTAGE].value)
 				< settings[FG_MEM_VBAT_EST_DIFF].value * 1000;
+	profiles_same = memcmp(chip->batt_profile, data,
+					PROFILE_COMPARE_LEN) == 0;
 	if (reg & PROFILE_INTEGRITY_BIT)
 		fg_cap_learning_load_data(chip);
 	if ((reg & PROFILE_INTEGRITY_BIT) && vbat_in_range
 			&& !fg_is_batt_empty(chip)
-			&& memcmp(chip->batt_profile, data, len - 4) == 0) {
+			&& profiles_same) {
 		if (fg_debug_mask & FG_STATUS)
 			pr_info("Battery profiles same, using default\n");
 		if (fg_est_dump)
@@ -2906,6 +2997,8 @@ wait:
 				fg_data[FG_DATA_VOLTAGE].value);
 	if ((fg_debug_mask & FG_STATUS) && fg_is_batt_empty(chip))
 		pr_info("battery empty\n");
+	if ((fg_debug_mask & FG_STATUS) && !profiles_same)
+		pr_info("profiles differ\n");
 	if (fg_debug_mask & FG_STATUS) {
 		pr_info("Using new profile\n");
 		print_hex_dump(KERN_INFO, "FG: loaded profile: ",
@@ -3494,7 +3587,8 @@ static int fg_init_irqs(struct fg_chip *chip)
 					chip->batt_irq[VBATT_LOW].irq, rc);
 				return rc;
 			}
-			enable_irq_wake(chip->batt_irq[VBATT_LOW].irq);
+			disable_irq_nosync(chip->batt_irq[VBATT_LOW].irq);
+			chip->vbat_low_irq_enabled = false;
 			break;
 		case FG_ADC:
 			break;

@@ -35,6 +35,7 @@
 #include <linux/qpnp/qpnp-adc.h>
 #include <linux/batterydata-lib.h>
 #include <linux/msm_bcl.h>
+#include <linux/ktime.h>
 
 /* Mask/Bit helpers */
 #define _SMB_MASK(BITS, POS) \
@@ -57,6 +58,8 @@ struct parallel_usb_cfg {
 	bool				avail;
 	struct mutex			lock;
 	int				initial_aicl_ma;
+	ktime_t				last_disabled;
+	bool				enabled_once;
 };
 
 struct ilim_entry {
@@ -1383,8 +1386,8 @@ static int smbchg_set_usb_current_max(struct smbchg_chip *chip,
 		goto out;
 	}
 
-	rc = smbchg_set_high_usb_chg_current(chip, current_ma);
 out:
+	rc = smbchg_set_high_usb_chg_current(chip, current_ma);
 	pr_smb(PR_STATUS, "usb current set to %d mA\n",
 			chip->usb_max_current_ma);
 	if (rc < 0)
@@ -1420,13 +1423,24 @@ static int smbchg_get_min_parallel_current_ma(struct smbchg_chip *chip)
 #define USBIN_SUSPEND_STS_BIT		BIT(3)
 #define USBIN_ACTIVE_PWR_SRC_BIT	BIT(1)
 #define DCIN_ACTIVE_PWR_SRC_BIT		BIT(0)
+#define PARALLEL_REENABLE_TIMER_MS	30000
 static bool smbchg_is_parallel_usb_ok(struct smbchg_chip *chip)
 {
 	int min_current_thr_ma, rc, type;
+	ktime_t kt_since_last_disable;
 	u8 reg;
 
 	if (!smbchg_parallel_en) {
 		pr_smb(PR_STATUS, "Parallel charging not enabled\n");
+		return false;
+	}
+
+	kt_since_last_disable = ktime_sub(ktime_get_boottime(),
+					chip->parallel.last_disabled);
+	if (chip->parallel.enabled_once && ktime_to_ms(kt_since_last_disable)
+					< PARALLEL_REENABLE_TIMER_MS) {
+		pr_smb(PR_STATUS, "Only been %lld since disable, skipping\n",
+				ktime_to_ms(kt_since_last_disable));
 		return false;
 	}
 
@@ -1536,12 +1550,19 @@ static int smbchg_set_fastchg_current_raw(struct smbchg_chip *chip,
 static int smbchg_set_fastchg_current(struct smbchg_chip *chip,
 							int current_ma)
 {
-	int rc;
+	int rc = 0;
 
 	mutex_lock(&chip->fcc_lock);
 	if (chip->sw_esr_pulse_en)
 		current_ma = 300;
+	/* If the requested FCC is same, do not configure it again */
+	if (current_ma == chip->fastchg_current_ma) {
+		pr_smb(PR_STATUS, "not configuring FCC current: %d FCC: %d\n",
+			current_ma, chip->fastchg_current_ma);
+		goto out;
+	}
 	rc = smbchg_set_fastchg_current_raw(chip, current_ma);
+out:
 	mutex_unlock(&chip->fcc_lock);
 	return rc;
 }
@@ -1607,6 +1628,7 @@ static void smbchg_parallel_usb_disable(struct smbchg_chip *chip)
 	if (!parallel_psy)
 		return;
 	pr_smb(PR_STATUS, "disabling parallel charger\n");
+	chip->parallel.last_disabled = ktime_get_boottime();
 	taper_irq_en(chip, false);
 	chip->parallel.initial_aicl_ma = 0;
 	chip->parallel.current_max_ma = 0;
@@ -1783,6 +1805,19 @@ static void smbchg_parallel_usb_enable(struct smbchg_chip *chip)
 		goto disable_parallel;
 	}
 
+	rc = power_supply_set_voltage_limit(parallel_psy, chip->vfloat_mv + 50);
+	if (rc) {
+		dev_err(chip->dev, "Couldn't set float voltage on parallel psy rc: %d\n",
+			rc);
+		goto disable_parallel;
+	}
+	chip->target_fastchg_current_ma = chip->cfg_fastchg_current_ma / 2;
+	smbchg_set_fastchg_current(chip, chip->target_fastchg_current_ma);
+	pval.intval = chip->target_fastchg_current_ma * 1000;
+	parallel_psy->set_property(parallel_psy,
+			POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX, &pval);
+
+	chip->parallel.enabled_once = true;
 	new_parallel_cl_ma = total_current_ma / 2;
 
 	if (new_parallel_cl_ma == parallel_cl_ma) {
@@ -1797,18 +1832,7 @@ static void smbchg_parallel_usb_enable(struct smbchg_chip *chip)
 
 	taper_irq_en(chip, true);
 	chip->parallel.current_max_ma = new_parallel_cl_ma;
-	rc = power_supply_set_voltage_limit(parallel_psy, chip->vfloat_mv + 50);
-	if (rc) {
-		dev_err(chip->dev, "Couldn't set float voltage on parallel psy rc: %d\n",
-			rc);
-		goto disable_parallel;
-	}
 	power_supply_set_present(parallel_psy, true);
-	chip->target_fastchg_current_ma = chip->cfg_fastchg_current_ma / 2;
-	smbchg_set_fastchg_current(chip, chip->target_fastchg_current_ma);
-	pval.intval = chip->target_fastchg_current_ma * 1000;
-	parallel_psy->set_property(parallel_psy,
-			POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX, &pval);
 	smbchg_set_usb_current_max(chip, chip->parallel.current_max_ma);
 	power_supply_set_current_limit(parallel_psy,
 				chip->parallel.current_max_ma * 1000);
@@ -1818,6 +1842,21 @@ disable_parallel:
 	if (chip->parallel.current_max_ma != 0) {
 		pr_smb(PR_STATUS, "disabling parallel charger\n");
 		smbchg_parallel_usb_disable(chip);
+	} else if (chip->cfg_fastchg_current_ma !=
+			chip->target_fastchg_current_ma) {
+		/* There is a possibility that parallel charging is enabled
+		 * and a weak charger is connected, AICL result will be
+		 * lower than the min_current_thr_ma. In those cases, we
+		 * should fall back to configure the FCC of main charger.
+		 */
+		rc = smbchg_set_fastchg_current(chip,
+				chip->cfg_fastchg_current_ma);
+		if (rc)
+			pr_err("Couldn't set fastchg current rc: %d\n",
+				rc);
+		else
+			chip->target_fastchg_current_ma =
+				chip->cfg_fastchg_current_ma;
 	}
 }
 
@@ -3492,6 +3531,7 @@ static int smbchg_adjust_vfloat_mv_trim(struct smbchg_chip *chip,
 	return rc;
 }
 
+#define VFLOAT_RESAMPLE_DELAY_MS	10000
 static void smbchg_vfloat_adjust_work(struct work_struct *work)
 {
 	struct smbchg_chip *chip = container_of(work,
@@ -3500,7 +3540,6 @@ static void smbchg_vfloat_adjust_work(struct work_struct *work)
 	int vbat_uv, vbat_mv, ibat_ua, rc, delta_vfloat_mv;
 	bool taper, enable;
 
-start:
 	taper = (get_prop_charge_type(chip)
 		== POWER_SUPPLY_CHARGE_TYPE_TAPER);
 	enable = taper && (chip->parallel.current_max_ma == 0);
@@ -3524,7 +3563,7 @@ start:
 
 	if ((vbat_mv - chip->vfloat_mv) < -1 * vf_adjust_max_delta_mv) {
 		pr_smb(PR_STATUS, "Skip vbat out of range: %d\n", vbat_mv);
-		goto start;
+		goto reschedule;
 	}
 
 	rc = get_property_from_fg(chip,
@@ -3537,7 +3576,7 @@ start:
 
 	if (ibat_ua / 1000 > -chip->iterm_ma) {
 		pr_smb(PR_STATUS, "Skip ibat too high: %d\n", ibat_ua);
-		goto start;
+		goto reschedule;
 	}
 
 	pr_smb(PR_STATUS, "sample number = %d vbat_mv = %d ibat_ua = %d\n",
@@ -3550,7 +3589,7 @@ start:
 	if (chip->n_vbat_samples < vf_adjust_n_samples) {
 		pr_smb(PR_STATUS, "Skip %d samples; max = %d\n",
 			chip->n_vbat_samples, chip->max_vbat_sample);
-		goto start;
+		goto reschedule;
 	}
 	/* if max vbat > target vfloat, delta_vfloat_mv could be negative */
 	delta_vfloat_mv = chip->vfloat_mv - chip->max_vbat_sample;
@@ -3571,13 +3610,18 @@ start:
 		}
 		chip->max_vbat_sample = 0;
 		chip->n_vbat_samples = 0;
-		goto start;
+		goto reschedule;
 	}
 
 stop:
 	chip->max_vbat_sample = 0;
 	chip->n_vbat_samples = 0;
 	smbchg_relax(chip, PM_REASON_VFLOAT_ADJUST);
+	return;
+
+reschedule:
+	schedule_delayed_work(&chip->vfloat_adjust_work,
+			msecs_to_jiffies(VFLOAT_RESAMPLE_DELAY_MS));
 	return;
 }
 
@@ -3878,6 +3922,7 @@ static void handle_usb_removal(struct smbchg_chip *chip)
 		disable_irq_wake(chip->aicl_done_irq);
 		chip->enable_aicl_wake = false;
 	}
+	chip->parallel.enabled_once = false;
 	chip->vbat_above_headroom = false;
 }
 

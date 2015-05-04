@@ -1553,7 +1553,11 @@ void msm_isp_process_iommu_page_fault(struct vfe_device *vfe_dev)
 
 	pr_err("%s:%d] vfe_dev %p id %d\n", __func__,
 		__LINE__, vfe_dev, vfe_dev->pdev->id);
-
+	msm_isp_axi_disable_all_wm(vfe_dev);
+	msm_isp_stats_disable(vfe_dev);
+	/* VFE_SRC_MAX will call reg update on all stream src */
+	vfe_dev->hw_info->vfe_ops.core_ops.reg_update(vfe_dev,
+		VFE_SRC_MAX);
 	error_event.frame_id =
 		vfe_dev->axi_data.src_info[VFE_PIX_0].frame_id;
 	vfe_dev->buf_mgr->ops->buf_mgr_debug(vfe_dev->buf_mgr);
@@ -1565,14 +1569,7 @@ void msm_isp_process_iommu_page_fault(struct vfe_device *vfe_dev)
 
 void msm_isp_process_error_info(struct vfe_device *vfe_dev)
 {
-	int i;
-	uint8_t num_stats_type =
-		vfe_dev->hw_info->stats_hw_info->num_stats_type;
 	struct msm_vfe_error_info *error_info = &vfe_dev->error_info;
-	static DEFINE_RATELIMIT_STATE(rs,
-		DEFAULT_RATELIMIT_INTERVAL, DEFAULT_RATELIMIT_BURST);
-	static DEFINE_RATELIMIT_STATE(rs_stats,
-		DEFAULT_RATELIMIT_INTERVAL, DEFAULT_RATELIMIT_BURST);
 
 	if (error_info->error_count == 1 ||
 		!(error_info->info_dump_frame_count % 100)) {
@@ -1582,24 +1579,6 @@ void msm_isp_process_error_info(struct vfe_device *vfe_dev)
 		error_info->error_mask1 = 0;
 		error_info->camif_status = 0;
 		error_info->violation_status = 0;
-		for (i = 0; i < MAX_NUM_STREAM; i++) {
-			if (error_info->stream_framedrop_count[i] != 0 &&
-				__ratelimit(&rs)) {
-				pr_err("%s: Stream[%d]: dropped %d frames\n",
-					__func__, i,
-					error_info->stream_framedrop_count[i]);
-				error_info->stream_framedrop_count[i] = 0;
-			}
-		}
-		for (i = 0; i < num_stats_type; i++) {
-			if (error_info->stats_framedrop_count[i] != 0 &&
-				__ratelimit(&rs_stats)) {
-				pr_err("%s: Stats stream[%d]: dropped %d frames\n",
-					__func__, i,
-					error_info->stats_framedrop_count[i]);
-				error_info->stats_framedrop_count[i] = 0;
-			}
-		}
 	}
 }
 
@@ -1794,8 +1773,8 @@ void msm_isp_do_tasklet(unsigned long data)
 			msm_isp_process_iommu_page_fault(vfe_dev);
 			continue;
 		}
-		ISP_DBG("%s: status0: 0x%x status1: 0x%x\n",
-			__func__, irq_status0, irq_status1);
+		ISP_DBG("%s: vfe_id %d status0: 0x%x status1: 0x%x\n",
+			__func__, vfe_dev->pdev->id, irq_status0, irq_status1);
 		irq_ops->process_reset_irq(vfe_dev,
 			irq_status0, irq_status1);
 		irq_ops->process_halt_irq(vfe_dev,
@@ -1817,8 +1796,6 @@ void msm_isp_do_tasklet(unsigned long data)
 			irq_status0, irq_status1, &ts);
 		irq_ops->process_epoch_irq(vfe_dev,
 			irq_status0, irq_status1, &ts);
-
-		msm_isp_process_error_info(vfe_dev);
 	}
 }
 
@@ -1842,14 +1819,11 @@ static int msm_vfe_iommu_fault_handler(struct iommu_domain *domain,
 
 	if (token) {
 		vfe_dev = (struct vfe_device *)token;
-		msm_isp_axi_disable_all_wm(vfe_dev);
-		msm_isp_stats_disable(vfe_dev);
-		/* VFE_SRC_MAX will call reg update on all stream src */
-		vfe_dev->hw_info->vfe_ops.core_ops.reg_update(vfe_dev,
-			VFE_SRC_MAX);
-		if (!vfe_dev->buf_mgr || !vfe_dev->buf_mgr->ops) {
-			pr_err("%s:%d] buf_mgr %p\n", __func__,
-				__LINE__, vfe_dev->buf_mgr);
+		if (!vfe_dev->buf_mgr || !vfe_dev->buf_mgr->ops ||
+			!vfe_dev->axi_data.num_active_stream) {
+			pr_err("%s:%d] buf_mgr %p active strms %d\n", __func__,
+				__LINE__, vfe_dev->buf_mgr,
+				vfe_dev->axi_data.num_active_stream);
 			goto end;
 		}
 		if (!vfe_dev->buf_mgr->pagefault_debug) {
@@ -1932,6 +1906,7 @@ int msm_isp_open_node(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 	vfe_dev->axi_data.hw_info = vfe_dev->hw_info->axi_hw_info;
 	vfe_dev->taskletq_idx = 0;
 	vfe_dev->vt_enable = 0;
+	/* Register page fault handler */
 	iommu_set_fault_handler(vfe_dev->buf_mgr->iommu_domain,
 		msm_vfe_iommu_fault_handler, vfe_dev);
 	vfe_dev->buf_mgr->pagefault_debug = 0;
@@ -1973,6 +1948,9 @@ int msm_isp_close_node(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 		mutex_unlock(&vfe_dev->realtime_mutex);
 		return 0;
 	}
+	/* Unregister page fault handler */
+	iommu_set_fault_handler(vfe_dev->buf_mgr->iommu_domain,
+		NULL, NULL);
 
 	rc = vfe_dev->hw_info->vfe_ops.axi_ops.halt(vfe_dev, 1);
 	if (rc <= 0)
@@ -1987,4 +1965,26 @@ int msm_isp_close_node(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 	mutex_unlock(&vfe_dev->core_mutex);
 	mutex_unlock(&vfe_dev->realtime_mutex);
 	return 0;
+}
+
+void msm_isp_flush_tasklet(struct vfe_device *vfe_dev)
+{
+	unsigned long flags;
+	struct msm_vfe_tasklet_queue_cmd *queue_cmd;
+
+	spin_lock_irqsave(&vfe_dev->tasklet_lock, flags);
+	while (atomic_read(&vfe_dev->irq_cnt)) {
+		queue_cmd = list_first_entry(&vfe_dev->tasklet_q,
+		struct msm_vfe_tasklet_queue_cmd, list);
+		if (!queue_cmd) {
+			atomic_set(&vfe_dev->irq_cnt, 0);
+			break;
+		}
+		atomic_sub(1, &vfe_dev->irq_cnt);
+		list_del(&queue_cmd->list);
+		queue_cmd->cmd_used = 0;
+	}
+	spin_unlock_irqrestore(&vfe_dev->tasklet_lock, flags);
+
+	return;
 }
