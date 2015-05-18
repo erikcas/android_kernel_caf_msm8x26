@@ -1181,11 +1181,9 @@ static int mdss_fb_suspend_sub(struct msm_fb_data_type *mfd)
 		mfd->op_enable = false;
 		fb_set_suspend(mfd->fbi, FBINFO_STATE_SUSPENDED);
 	}
-
 #ifdef CONFIG_FB_MSM_MDSS_SPECIFIC_PANEL
 	pwr_pressed = false;
 #endif
-
 exit:
 	return ret;
 }

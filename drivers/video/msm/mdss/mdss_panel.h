@@ -713,6 +713,7 @@ int mdss_panel_get_boot_cfg(void);
  * returns true if mdss is ready, else returns false.
  */
 bool mdss_is_ready(void);
+int mdss_rect_cmp(struct mdss_rect *rect1, struct mdss_rect *rect2);
 
 struct msm_fb_data_type;
 #if defined(CONFIG_DEBUG_FS) && defined(CONFIG_FB_MSM_MDSS_SPECIFIC_PANEL)
