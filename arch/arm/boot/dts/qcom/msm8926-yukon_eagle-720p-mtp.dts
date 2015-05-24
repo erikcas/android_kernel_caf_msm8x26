@@ -14,6 +14,9 @@
 /dts-v1/;
 
 #include "msm8926-v1.dtsi"
+#include "msm8226-memory.dtsi"
+#include "msm8226-qseecom.dtsi"
+#include "msm8226-sharedmem.dtsi"
 #include "msm8226-yukon_eagle-720p-mtp.dtsi"
 #include "msm8226-yukon_eagle-camera-sensor-mtp.dtsi"
 
