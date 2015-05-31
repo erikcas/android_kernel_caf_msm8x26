@@ -261,6 +261,8 @@ struct lcd_panel_info {
 	u32 chenge_fps_cmds_num;
 	u32 chenge_fps_payload_num;
 #endif
+	u32 h_polarity;
+	u32 v_polarity;
 };
 
 
