@@ -126,6 +126,8 @@ endif
 
 $(KERNEL_OUT):
 	mkdir -p $(KERNEL_OUT)
+	mkdir -p $(KERNEL_OUT)/usr
+	mkdir -p $(KERNEL_OUT)/include
 	mkdir -p $(KERNEL_MODULES_OUT)
 	mkdir -p $(KERNEL_DTB_OUT)
 
