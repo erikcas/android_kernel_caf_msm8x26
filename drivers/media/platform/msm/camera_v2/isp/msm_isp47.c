@@ -269,10 +269,10 @@ static void msm_vfe47_release_hardware(struct vfe_device *vfe_dev)
 	tasklet_kill(&vfe_dev->vfe_tasklet);
 	iounmap(vfe_dev->vfe_vbif_base);
 	vfe_dev->vfe_vbif_base = NULL;
-	iounmap(vfe_dev->vfe_base);
-	vfe_dev->vfe_base = NULL;
 	msm_cam_clk_enable(&vfe_dev->pdev->dev, msm_vfe47_clk_info,
 		vfe_dev->vfe_clk, vfe_dev->num_clk, 0);
+	iounmap(vfe_dev->vfe_base);
+	vfe_dev->vfe_base = NULL;
 	kfree(vfe_dev->vfe_clk);
 	regulator_disable(vfe_dev->fs_vfe);
 	msm_isp_deinit_bandwidth_mgr(ISP_VFE0 + vfe_dev->pdev->id);
@@ -929,7 +929,7 @@ static void msm_vfe47_cfg_camif(struct vfe_device *vfe_dev,
 {
 	uint16_t first_pixel, last_pixel, first_line, last_line;
 	struct msm_vfe_camif_cfg *camif_cfg = &pix_cfg->camif_cfg;
-	uint32_t val;
+	uint32_t val, subsample_period, subsample_pattern;
 	uint32_t irq_sub_period = 32;
 	uint32_t frame_sub_period = 32;
 
@@ -940,6 +940,8 @@ static void msm_vfe47_cfg_camif(struct vfe_device *vfe_dev,
 	last_pixel = camif_cfg->last_pixel;
 	first_line = camif_cfg->first_line;
 	last_line = camif_cfg->last_line;
+	subsample_period = camif_cfg->subsample_cfg.irq_subsample_period;
+	subsample_pattern = camif_cfg->subsample_cfg.irq_subsample_pattern;
 
 	msm_camera_io_w(camif_cfg->lines_per_frame << 16 |
 		camif_cfg->pixels_per_line, vfe_dev->vfe_base + 0x484);
@@ -954,6 +956,19 @@ static void msm_vfe47_cfg_camif(struct vfe_device *vfe_dev,
 		(frame_sub_period - 1), vfe_dev->vfe_base + 0x494);
 	msm_camera_io_w(0xFFFFFFFF, vfe_dev->vfe_base + 0x498);
 	msm_camera_io_w(0xFFFFFFFF, vfe_dev->vfe_base + 0x49C);
+	if (subsample_period && subsample_pattern) {
+		val = msm_camera_io_r(vfe_dev->vfe_base + 0x494);
+		val &= 0xFFE0FFFF;
+		val = (subsample_period - 1) << 16;
+		msm_camera_io_w(val, vfe_dev->vfe_base + 0x494);
+		ISP_DBG("%s:camif PERIOD %x PATTERN %x\n",
+			__func__,  subsample_period, subsample_pattern);
+
+		val = subsample_pattern;
+		msm_camera_io_w(val, vfe_dev->vfe_base + 0x49C);
+	} else {
+		msm_camera_io_w(0xFFFFFFFF, vfe_dev->vfe_base + 0x49C);
+	}
 
 	val = msm_camera_io_r(vfe_dev->vfe_base + 0x46C);
 	val |= camif_cfg->camif_input;
@@ -1137,6 +1152,7 @@ static void msm_vfe47_axi_cfg_wm_xbar_reg(
 			case V4L2_PIX_FMT_NV12:
 			case V4L2_PIX_FMT_NV14:
 			case V4L2_PIX_FMT_NV16:
+			case V4L2_PIX_FMT_NV24:
 				/* PAIR_STREAM_SWAP_CTRL */
 				xbar_cfg |= 0x3 << 4;
 				break;
@@ -1268,6 +1284,13 @@ static void msm_vfe47_cfg_axi_ub(struct vfe_device *vfe_dev)
 		msm_vfe47_cfg_axi_ub_equal_slicing(vfe_dev);
 	else
 		msm_vfe47_cfg_axi_ub_equal_default(vfe_dev);
+}
+
+static void msm_vfe47_read_wm_ping_pong_addr(
+	struct vfe_device *vfe_dev)
+{
+	msm_camera_io_dump_2(vfe_dev->vfe_base +
+		(VFE47_WM_BASE(0) & 0xFFFFFFF0), 0x100);
 }
 
 static void msm_vfe47_update_ping_pong_addr(
@@ -1413,7 +1436,7 @@ static void msm_vfe47_stats_cfg_comp_mask(
 	struct vfe_device *vfe_dev,
 	uint32_t stats_mask, uint8_t enable)
 {
-	uint32_t reg_mask, comp_stats_mask, mask_bf_scale;
+	uint32_t reg_mask = 0, comp_stats_mask = 0, mask_bf_scale = 0;
 	uint32_t i = 0;
 	atomic_t *stats_comp;
 	struct msm_vfe_stats_shared_data *stats_data = &vfe_dev->stats_data;
@@ -1935,6 +1958,8 @@ struct msm_vfe_hardware_info vfe47_hw_info = {
 			.cfg_wm_xbar_reg = msm_vfe47_axi_cfg_wm_xbar_reg,
 			.clear_wm_xbar_reg = msm_vfe47_axi_clear_wm_xbar_reg,
 			.cfg_ub = msm_vfe47_cfg_axi_ub,
+			.read_wm_ping_pong_addr =
+				msm_vfe47_read_wm_ping_pong_addr,
 			.update_ping_pong_addr =
 				msm_vfe47_update_ping_pong_addr,
 			.get_comp_mask = msm_vfe47_get_comp_mask,

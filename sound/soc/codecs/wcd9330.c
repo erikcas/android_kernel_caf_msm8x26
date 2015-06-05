@@ -2937,13 +2937,6 @@ static int tomtom_codec_internal_rco_ctrl(struct snd_soc_codec *codec,
 	struct tomtom_priv *tomtom = snd_soc_codec_get_drvdata(codec);
 	int ret = 0;
 
-	if (mutex_is_locked(&tomtom->resmgr.codec_bg_clk_lock)) {
-		dev_err(codec->dev, "%s: BG_CLK already acquired\n",
-			__func__);
-		ret = -EINVAL;
-		goto done;
-	}
-
 	if (!tomtom->codec_ext_clk_en_cb) {
 		dev_err(codec->dev,
 			"%s: Invalid ext_clk_callback\n",
@@ -3539,7 +3532,7 @@ static int tomtom_codec_enable_micbias(struct snd_soc_dapm_widget *w,
 		}
 		break;
 	case SND_SOC_DAPM_POST_PMU:
-		usleep_range(20000, 20100);
+		usleep_range(5000, 5100);
 		/* Let MBHC module know so micbias is on */
 		wcd9xxx_resmgr_notifier_call(&tomtom->resmgr, e_post_on);
 		break;
@@ -4329,12 +4322,12 @@ static int tomtom_hph_pa_event(struct snd_soc_dapm_widget *w,
 		break;
 
 	case SND_SOC_DAPM_POST_PMD:
+		/* Let MBHC module know PA turned off */
+		wcd9xxx_resmgr_notifier_call(&tomtom->resmgr, e_post_off);
 		usleep_range(pa_settle_time, pa_settle_time + 1000);
 		pr_debug("%s: sleep %d us after %s PA disable\n", __func__,
 				pa_settle_time, w->name);
 
-		/* Let MBHC module know PA turned off */
-		wcd9xxx_resmgr_notifier_call(&tomtom->resmgr, e_post_off);
 		break;
 	}
 	return 0;

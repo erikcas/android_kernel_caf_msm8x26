@@ -2994,9 +2994,7 @@ static int mdss_fb_pan_idle(struct msm_fb_data_type *mfd)
 		ret = -ETIMEDOUT;
 	} else if (mfd->shutdown_pending) {
 		pr_debug("Shutdown signalled\n");
-		ret = -ESHUTDOWN;
-	} else {
-		ret = 0;
+		return -ESHUTDOWN;
 	}
 
 	return ret;
@@ -3022,9 +3020,7 @@ static int mdss_fb_wait_for_kickoff(struct msm_fb_data_type *mfd)
 		ret = -ETIMEDOUT;
 	} else if (mfd->shutdown_pending) {
 		pr_debug("Shutdown signalled\n");
-		ret = -ESHUTDOWN;
-	} else {
-		ret = 0;
+		return -ESHUTDOWN;
 	}
 
 	return ret;

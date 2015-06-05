@@ -53,7 +53,7 @@
 #define STATS_COMP_BIT_MASK 0x1FF
 
 #define MSM_ISP_MIN_AB 100000000
-#define MSM_ISP_MIN_IB 100000000
+#define MSM_ISP_MIN_IB 120000000
 
 struct vfe_device;
 struct msm_vfe_axi_stream;
@@ -150,6 +150,8 @@ struct msm_vfe_axi_ops {
 		struct msm_vfe_axi_stream *stream_info, uint8_t plane_idx);
 
 	void (*cfg_ub) (struct vfe_device *vfe_dev);
+
+	void (*read_wm_ping_pong_addr)(struct vfe_device *vfe_dev);
 
 	void (*update_ping_pong_addr) (struct vfe_device *vfe_dev,
 		uint8_t wm_idx, uint32_t pingpong_status, dma_addr_t paddr);
@@ -368,6 +370,7 @@ struct msm_vfe_src_info {
 	long pixel_clock;
 	uint32_t input_format;/*V4L2 pix format with bayer pattern*/
 	uint32_t last_updt_frm_id;
+	uint32_t sof_counter_step;
 };
 
 struct msm_vfe_fetch_engine_info {

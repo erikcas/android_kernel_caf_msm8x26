@@ -555,7 +555,7 @@ void msm_pcm_routing_reg_psthr_stream(int fedai_id, int dspst_id,
 	mutex_unlock(&routing_lock);
 }
 
-int msm_pcm_routing_reg_phy_compr_stream(int fe_id, bool perf_mode,
+int msm_pcm_routing_reg_phy_compr_stream(int fe_id, int perf_mode,
 					  int dspst_id, int stream_type,
 					  uint32_t compr_passthr_mode)
 {
@@ -783,7 +783,7 @@ int msm_pcm_routing_reg_phy_stream(int fedai_id, int perf_mode,
 	return 0;
 }
 
-int msm_pcm_routing_reg_phy_stream_v2(int fedai_id, bool perf_mode,
+int msm_pcm_routing_reg_phy_stream_v2(int fedai_id, int perf_mode,
 				      int dspst_id, int stream_type,
 				      struct msm_pcm_routing_evt event_info)
 {
@@ -3665,10 +3665,10 @@ static int msm_routing_put_stereo_to_custom_stereo_control(
 	int flag = 0, i = 0, rc = 0, idx = 0;
 	int be_index = 0, port_id, topo_id;
 	unsigned int session_id = 0;
-	uint16_t op_FL_ip_FL_weight;
-	uint16_t op_FL_ip_FR_weight;
-	uint16_t op_FR_ip_FL_weight;
-	uint16_t op_FR_ip_FR_weight;
+	uint16_t op_FL_ip_FL_weight = 0;
+	uint16_t op_FL_ip_FR_weight = 0;
+	uint16_t op_FR_ip_FL_weight = 0;
+	uint16_t op_FR_ip_FR_weight = 0;
 	flag = ucontrol->value.integer.value[0];
 	pr_debug("%s E flag %d\n", __func__, flag);
 

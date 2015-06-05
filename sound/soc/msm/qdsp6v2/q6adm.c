@@ -231,12 +231,12 @@ static int adm_get_next_available_copp(int port_idx)
 }
 
 int adm_dts_eagle_set(int port_id, int copp_idx, int param_id,
-		      void *data, int size)
+		      void *data, uint32_t size)
 {
 	struct adm_cmd_set_pp_params_v5	admp;
 	int p_idx, ret = 0, *ob_params;
 
-	pr_debug("DTS_EAGLE_ADM: %s - port id %i, copp idx %i, param id 0x%X size %d\n",
+	pr_debug("DTS_EAGLE_ADM: %s - port id %i, copp idx %i, param id 0x%X size %u\n",
 		__func__, port_id, copp_idx, param_id, size);
 
 	port_id = afe_convert_virtual_to_portid(port_id);
@@ -263,8 +263,12 @@ int adm_dts_eagle_set(int port_id, int copp_idx, int param_id,
 		ret = -EINVAL;
 		goto fail_cmd;
 	}
-	if (size + APR_CMD_OB_HDR_SZ > this_adm.outband_memmap.size) {
-		pr_err("DTS_EAGLE_ADM - %s: ion alloc of size %zu too small for size requested %i.\n",
+	/* check for integer overflow */
+	if (size > (UINT_MAX - APR_CMD_OB_HDR_SZ))
+		ret = -EINVAL;
+	if ((ret < 0) ||
+	    (size + APR_CMD_OB_HDR_SZ > this_adm.outband_memmap.size)) {
+		pr_err("DTS_EAGLE_ADM - %s: ion alloc of size %zu too small for size requested %u\n",
 			__func__, this_adm.outband_memmap.size,
 			size + APR_CMD_OB_HDR_SZ);
 		ret = -EINVAL;
@@ -320,11 +324,11 @@ fail_cmd:
 }
 
 int adm_dts_eagle_get(int port_id, int copp_idx, int param_id,
-		      void *data, int size)
+		      void *data, uint32_t size)
 {
 	struct adm_cmd_get_pp_params_v5	admp;
-	int p_idx, ret = 0, orig_size = size, *ob_params;
-
+	int p_idx, ret = 0, *ob_params;
+	uint32_t orig_size = size;
 	pr_debug("DTS_EAGLE_ADM: %s - port id %i, copp idx %i, param id 0x%X\n",
 		 __func__, port_id, copp_idx, param_id);
 
@@ -342,8 +346,8 @@ int adm_dts_eagle_get(int port_id, int copp_idx, int param_id,
 		return -EINVAL;
 	}
 
-	if (size <= 0 || !data) {
-		pr_err("DTS_EAGLE_ADM: %s - invalid size %i or pointer %p.\n",
+	if ((size == 0) || !data) {
+		pr_err("DTS_EAGLE_ADM: %s - invalid size %u or pointer %p.\n",
 			__func__, size, data);
 		return -EINVAL;
 	}
@@ -357,8 +361,12 @@ int adm_dts_eagle_get(int port_id, int copp_idx, int param_id,
 		ret = -EINVAL;
 		goto fail_cmd;
 	}
-	if (size + APR_CMD_OB_HDR_SZ > this_adm.outband_memmap.size) {
-		pr_err("DTS_EAGLE_ADM - %s: ion alloc of size %zu too small for size requested %i.\n",
+	/* check for integer overflow */
+	if (size > (UINT_MAX - APR_CMD_OB_HDR_SZ))
+		ret = -EINVAL;
+	if ((ret < 0) ||
+	    (size + APR_CMD_OB_HDR_SZ > this_adm.outband_memmap.size)) {
+		pr_err("DTS_EAGLE_ADM - %s: ion alloc of size %zu too small for size requested %u\n",
 			__func__, this_adm.outband_memmap.size,
 			size + APR_CMD_OB_HDR_SZ);
 		ret = -EINVAL;
@@ -705,7 +713,7 @@ int adm_set_stereo_to_custom_stereo(int port_id, int copp_idx,
 	adm_params->mem_map_handle = 0;
 	adm_params->payload_size = params_length;
 	/* direction RX as 0 */
-	adm_params->direction = ADM_PATH_PLAYBACK;
+	adm_params->direction = ADM_MATRIX_ID_AUDIO_RX;
 	/* session id for this cmd to be applied on */
 	adm_params->sessionid = session_id;
 	adm_params->deviceid =
@@ -1641,11 +1649,13 @@ static struct cal_block_data *adm_find_cal_by_path(int cal_index, int path)
 
 		if (cal_index == ADM_AUDPROC_CAL) {
 			audproc_cal_info = cal_block->cal_info;
-			if (audproc_cal_info->path == path)
+			if ((audproc_cal_info->path == path) &&
+			    (cal_block->cal_data.size > 0))
 				return cal_block;
 		} else if (cal_index == ADM_AUDVOL_CAL) {
 			audvol_cal_info = cal_block->cal_info;
-			if (audvol_cal_info->path == path)
+			if ((audvol_cal_info->path == path) &&
+			    (cal_block->cal_data.size > 0))
 				return cal_block;
 		}
 	}
@@ -1672,12 +1682,14 @@ static struct cal_block_data *adm_find_cal_by_app_type(int cal_index, int path,
 		if (cal_index == ADM_AUDPROC_CAL) {
 			audproc_cal_info = cal_block->cal_info;
 			if ((audproc_cal_info->path == path) &&
-			    (audproc_cal_info->app_type == app_type))
+			    (audproc_cal_info->app_type == app_type) &&
+			    (cal_block->cal_data.size > 0))
 				return cal_block;
 		} else if (cal_index == ADM_AUDVOL_CAL) {
 			audvol_cal_info = cal_block->cal_info;
 			if ((audvol_cal_info->path == path) &&
-			    (audvol_cal_info->app_type == app_type))
+			    (audvol_cal_info->app_type == app_type) &&
+			    (cal_block->cal_data.size > 0))
 				return cal_block;
 		}
 	}
@@ -1708,13 +1720,15 @@ static struct cal_block_data *adm_find_cal(int cal_index, int path,
 			if ((audproc_cal_info->path == path) &&
 			    (audproc_cal_info->app_type == app_type) &&
 			    (audproc_cal_info->acdb_id == acdb_id) &&
-			    (audproc_cal_info->sample_rate == sample_rate))
+			    (audproc_cal_info->sample_rate == sample_rate) &&
+			    (cal_block->cal_data.size > 0))
 				return cal_block;
 		} else if (cal_index == ADM_AUDVOL_CAL) {
 			audvol_cal_info = cal_block->cal_info;
 			if ((audvol_cal_info->path == path) &&
 			    (audvol_cal_info->app_type == app_type) &&
-			    (audvol_cal_info->acdb_id == acdb_id))
+			    (audvol_cal_info->acdb_id == acdb_id) &&
+			    (cal_block->cal_data.size > 0))
 				return cal_block;
 		}
 	}
