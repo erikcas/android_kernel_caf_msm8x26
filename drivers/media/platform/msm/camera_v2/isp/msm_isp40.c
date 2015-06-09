@@ -312,6 +312,7 @@ static int msm_vfe40_init_hardware(struct vfe_device *vfe_dev)
 		goto vbif_remap_failed;
 	}
 
+	tasklet_enable(&vfe_dev->vfe_tasklet);
 	rc = request_irq(vfe_dev->vfe_irq->start, msm_isp_process_irq,
 		IRQF_TRIGGER_RISING, "vfe", vfe_dev);
 	if (rc < 0) {
@@ -320,6 +321,7 @@ static int msm_vfe40_init_hardware(struct vfe_device *vfe_dev)
 	}
 	return rc;
 irq_req_failed:
+	tasklet_disable(&vfe_dev->vfe_tasklet);
 	iounmap(vfe_dev->vfe_vbif_base);
 	vfe_dev->vfe_vbif_base = NULL;
 vbif_remap_failed:
@@ -341,7 +343,8 @@ bus_scale_register_failed:
 static void msm_vfe40_release_hardware(struct vfe_device *vfe_dev)
 {
 	free_irq(vfe_dev->vfe_irq->start, vfe_dev);
-	tasklet_kill(&vfe_dev->vfe_tasklet);
+	tasklet_disable(&vfe_dev->vfe_tasklet);
+	msm_isp_flush_tasklet(vfe_dev);
 	iounmap(vfe_dev->vfe_vbif_base);
 	vfe_dev->vfe_vbif_base = NULL;
 	iounmap(vfe_dev->vfe_base);
@@ -1150,7 +1153,10 @@ static void msm_vfe40_cfg_camif(struct vfe_device *vfe_dev,
 {
 	uint16_t first_pixel, last_pixel, first_line, last_line;
 	struct msm_vfe_camif_cfg *camif_cfg = &pix_cfg->camif_cfg;
-	uint32_t val;
+	uint32_t val, subsample_period, subsample_pattern;
+	struct msm_vfe_camif_subsample_cfg *subsample_cfg =
+		&pix_cfg->camif_cfg.subsample_cfg;
+	uint16_t bus_sub_en = 0;
 
 	msm_camera_io_w(pix_cfg->input_mux << 16 | pix_cfg->pixel_pattern,
 			vfe_dev->vfe_base + 0x1C);
@@ -1159,6 +1165,8 @@ static void msm_vfe40_cfg_camif(struct vfe_device *vfe_dev,
 	last_pixel = camif_cfg->last_pixel;
 	first_line = camif_cfg->first_line;
 	last_line = camif_cfg->last_line;
+	subsample_period = camif_cfg->subsample_cfg.irq_subsample_period;
+	subsample_pattern = camif_cfg->subsample_cfg.irq_subsample_pattern;
 
 	msm_camera_io_w(camif_cfg->lines_per_frame << 16 |
 		camif_cfg->pixels_per_line, vfe_dev->vfe_base + 0x300);
@@ -1168,12 +1176,51 @@ static void msm_vfe40_cfg_camif(struct vfe_device *vfe_dev,
 
 	msm_camera_io_w(first_line << 16 | last_line,
 	vfe_dev->vfe_base + 0x308);
+	if (subsample_period && subsample_pattern) {
+		val = msm_camera_io_r(vfe_dev->vfe_base + 0x2F8);
+		val &= 0xFFE0FFFF;
+		val = (subsample_period - 1) << 16;
+		msm_camera_io_w(val, vfe_dev->vfe_base + 0x2F8);
+		ISP_DBG("%s:camif PERIOD %x PATTERN %x\n",
+			__func__,  subsample_period, subsample_pattern);
 
-	msm_camera_io_w(0xFFFFFFFF, vfe_dev->vfe_base + 0x314);
-
+		val = subsample_pattern;
+		msm_camera_io_w(val, vfe_dev->vfe_base + 0x314);
+	} else {
+		msm_camera_io_w(0xFFFFFFFF, vfe_dev->vfe_base + 0x314);
+	}
 	val = msm_camera_io_r(vfe_dev->vfe_base + 0x2E8);
 	val |= camif_cfg->camif_input;
 	msm_camera_io_w(val, vfe_dev->vfe_base + 0x2E8);
+
+	switch (pix_cfg->input_mux) {
+	case CAMIF:
+		val = 0x01;
+		msm_camera_io_w(val, vfe_dev->vfe_base + 0x2F4);
+		if (subsample_cfg->pixel_skip || subsample_cfg->line_skip) {
+			bus_sub_en = 1;
+			val = msm_camera_io_r(vfe_dev->vfe_base + 0x2F8);
+			val &= 0xFFFFFFDF;
+			val = val | bus_sub_en << 5;
+			msm_camera_io_w(val, vfe_dev->vfe_base + 0x2F8);
+			subsample_cfg->pixel_skip &= 0x0000FFFF;
+			subsample_cfg->line_skip  &= 0x0000FFFF;
+			msm_camera_io_w((subsample_cfg->line_skip << 16) |
+				subsample_cfg->pixel_skip,
+				vfe_dev->vfe_base + 0x30C);
+		}
+		break;
+	case TESTGEN:
+		val = 0x01;
+		msm_camera_io_w(val, vfe_dev->vfe_base + 0x93C);
+		break;
+	case EXTERNAL_READ:
+		return;
+	default:
+		pr_err("%s: not supported input_mux %d\n",
+			__func__, pix_cfg->input_mux);
+		break;
+	}
 }
 
 static void msm_vfe40_cfg_input_mux(struct vfe_device *vfe_dev,
@@ -1374,6 +1421,7 @@ static void msm_vfe40_axi_cfg_wm_xbar_reg(
 			case V4L2_PIX_FMT_NV12:
 			case V4L2_PIX_FMT_NV14:
 			case V4L2_PIX_FMT_NV16:
+			case V4L2_PIX_FMT_NV24:
 				xbar_cfg |= 0x3 << 4; /*PAIR_STREAM_SWAP_CTRL*/
 				break;
 			}
@@ -1518,6 +1566,13 @@ static void msm_vfe40_cfg_axi_ub(struct vfe_device *vfe_dev)
 		vfe_dev->ub_info->policy = MSM_WM_UB_CFG_DEFAULT;
 		msm_vfe40_cfg_axi_ub_equal_default(vfe_dev);
 	}
+}
+
+static void msm_vfe40_read_wm_ping_pong_addr(
+	struct vfe_device *vfe_dev)
+{
+	msm_camera_io_dump_2(vfe_dev->vfe_base +
+		(VFE40_WM_BASE(0) & 0xFFFFFFF0), 0x100);
 }
 
 static void msm_vfe40_update_ping_pong_addr(
@@ -2073,6 +2128,8 @@ struct msm_vfe_hardware_info vfe40_hw_info = {
 			.cfg_wm_xbar_reg = msm_vfe40_axi_cfg_wm_xbar_reg,
 			.clear_wm_xbar_reg = msm_vfe40_axi_clear_wm_xbar_reg,
 			.cfg_ub = msm_vfe40_cfg_axi_ub,
+			.read_wm_ping_pong_addr =
+				msm_vfe40_read_wm_ping_pong_addr,
 			.update_ping_pong_addr =
 				msm_vfe40_update_ping_pong_addr,
 			.get_comp_mask = msm_vfe40_get_comp_mask,
