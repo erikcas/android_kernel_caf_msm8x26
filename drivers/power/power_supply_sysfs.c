@@ -47,7 +47,7 @@ static ssize_t power_supply_show_property(struct device *dev,
 	static char *type_text[] = {
 		"Unknown", "Battery", "UPS", "Mains", "USB", "USB_DCP",
 		"USB_CDP", "USB_ACA", "USB_HVDCP", "Wireless", "BMS",
-		"USB_Parallel", "Wipower"
+		"USB_Parallel", "Wipower",  "Dual_Wireless"
 	};
 	static char *status_text[] = {
 		"Unknown", "Charging", "Discharging", "Not charging", "Full"
@@ -201,6 +201,8 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(temp_alert_max),
 	POWER_SUPPLY_ATTR(temp_cool),
 	POWER_SUPPLY_ATTR(temp_warm),
+	POWER_SUPPLY_ATTR(temp_cold),
+	POWER_SUPPLY_ATTR(temp_hot),
 	POWER_SUPPLY_ATTR(temp_ambient),
 	POWER_SUPPLY_ATTR(temp_ambient_alert_min),
 	POWER_SUPPLY_ATTR(temp_ambient_alert_max),
@@ -226,6 +228,12 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(flash_current_max),
 	POWER_SUPPLY_ATTR(update_now),
 	POWER_SUPPLY_ATTR(esr_count),
+	POWER_SUPPLY_ATTR(usbin_det),
+	POWER_SUPPLY_ATTR(wireless_det),
+	POWER_SUPPLY_ATTR(invalid_charger),
+	POWER_SUPPLY_ATTR(llk_socmax),
+	POWER_SUPPLY_ATTR(llk_socmin),
+	POWER_SUPPLY_ATTR(stop_usb_host_function),
 	POWER_SUPPLY_ATTR(safety_timer_enabled),
 	POWER_SUPPLY_ATTR(charge_done),
 	POWER_SUPPLY_ATTR(flash_active),
@@ -237,6 +245,7 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(manufacturer),
 	POWER_SUPPLY_ATTR(serial_number),
 	POWER_SUPPLY_ATTR(battery_type),
+	POWER_SUPPLY_ATTR(charger_type),
 };
 
 static struct attribute *
