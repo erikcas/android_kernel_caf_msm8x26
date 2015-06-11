@@ -18,7 +18,7 @@
 ifeq ($(BUILD_KERNEL),true)
 ifeq ($(filter-out amami aries castor eagle flamingo honami leo scorpion seagull sirius tianchi tianchi_dsds togari,$(TARGET_DEVICE)),)
 
-KERNEL_SRC := $(call my-dir)
+KERNEL_SRC := kernel/sony/msm
 # kernel configuration - mandatory:
 TARGET_KERNEL_CONFIG ?= $(notdir $(wildcard $(KERNEL_SRC)/arch/arm/configs/aosp_*_$(TARGET_DEVICE)_defconfig))
 KERNEL_DEFCONFIG := $(TARGET_KERNEL_CONFIG)
