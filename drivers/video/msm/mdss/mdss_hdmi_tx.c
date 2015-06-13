@@ -2256,7 +2256,9 @@ static void hdmi_tx_core_off(struct hdmi_tx_ctrl *hdmi_ctrl)
 		return;
 	}
 
+#if 0 /* Sony SPECIFIC */
 	hdmi_tx_enable_power(hdmi_ctrl, HDMI_TX_CEC_PM, 0);
+#endif
 	hdmi_tx_enable_power(hdmi_ctrl, HDMI_TX_CORE_PM, 0);
 } /* hdmi_tx_core_off */
 
@@ -2269,6 +2271,7 @@ static int hdmi_tx_core_on(struct hdmi_tx_ctrl *hdmi_ctrl)
 		return -EINVAL;
 	}
 
+#if 0 /* Sony SPECIFIC */
 	rc = hdmi_tx_enable_power(hdmi_ctrl, HDMI_TX_CORE_PM, 1);
 	if (rc) {
 		DEV_ERR("%s: core hdmi_msm_enable_power failed rc = %d\n",
@@ -2281,7 +2284,7 @@ static int hdmi_tx_core_on(struct hdmi_tx_ctrl *hdmi_ctrl)
 			__func__, rc);
 		goto disable_core_power;
 	}
-
+#endif
 	return rc;
 disable_core_power:
 	hdmi_tx_enable_power(hdmi_ctrl, HDMI_TX_CORE_PM, 0);
