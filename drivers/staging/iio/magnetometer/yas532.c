@@ -562,12 +562,29 @@ static int yas_get_enable(void)
 static int yas_set_enable(int enable)
 {
 	int rt = YAS_NO_ERROR;
+	int gpio = 0;
+
+        gpio = gpio_get_value(GEOMAGNETIC_RSTN_GPIO);
+	printk("%s: gpio_tlmm_config => pin(%d), GPIO_CFG_OUTPUT, HL=%d, GPIO_CFG_2MA\n", __FUNCTION__, GEOMAGNETIC_RSTN_GPIO, gpio);
 	if (!driver.initialized)
 		return YAS_ERROR_INITIALIZE;
 	enable = !!enable;
 	if (driver.enable == enable)
 		return YAS_NO_ERROR;
 	if (enable) {
+		if(gpio == 0) {
+			if(gpio_request(GEOMAGNETIC_RSTN_GPIO,
+							"geomagnetic-rstn") < 0);
+			{
+			printk(KERN_ERR "%s: gpio_request geomagnetic-rstn",
+							__FUNCTION__);
+			}
+			if(gpio_direction_output(GEOMAGNETIC_RSTN_GPIO, 1) < 0)
+			{
+			printk(KERN_ERR "%s: gpio_direction_output geomagnetic-rstn",
+							__FUNCTION__);
+			}
+		}
 		if (driver.cbk.device_open(YAS_TYPE_MAG) < 0)
 			return YAS_ERROR_DEVICE_COMMUNICATION;
 		if (yas_single_write(YAS532_REG_TEST1R, 0x00) < 0) {
@@ -736,6 +753,8 @@ static int yas_ext(int32_t cmd, void *p)
 	return YAS_ERROR_ARG;
 }
 
+uint8_t g_iio_compass_product_id=0;
+
 static int yas_init(void)
 {
 	int i, rt;
@@ -749,6 +768,7 @@ static int yas_init(void)
 		return YAS_ERROR_DEVICE_COMMUNICATION;
 	}
 	driver.dev_id = data;
+	g_iio_compass_product_id = driver.dev_id;
 	if (driver.dev_id != YAS532_DEVICE_ID) {
 		driver.cbk.device_close(YAS_TYPE_MAG);
 		return YAS_ERROR_CHIP_ID;
@@ -1645,6 +1665,19 @@ static struct i2c_driver yas_driver = {
 	.remove		= yas_remove,
 	.id_table	= yas_id,
 };
+
+static int __init yas_initialize(void)
+{
+	return i2c_add_driver(&yas_driver);
+}
+
+static void __exit yas_terminate(void)
+{
+	i2c_del_driver(&yas_driver);
+}
+
+module_init(yas_initialize);
+module_exit(yas_terminate);
 module_i2c_driver(yas_driver);
 
 
