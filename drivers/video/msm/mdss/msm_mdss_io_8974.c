@@ -965,8 +965,7 @@ static int mdss_dsi_ulps_config(struct mdss_dsi_ctrl_pdata *ctrl,
 	mipi = &pinfo->mipi;
 
 	if (!mdss_dsi_ulps_feature_enabled(pdata) &&
-		!pinfo->ulps_suspend_enabled &&
-		(pinfo->blank_state != MDSS_PANEL_BLANK_BLANK)) {
+		!pinfo->ulps_suspend_enabled) {
 		pr_debug("%s: ULPS feature not supported. enable=%d\n",
 			__func__, enable);
 		return -ENOTSUPP;
@@ -1025,9 +1024,9 @@ static int mdss_dsi_ulps_config(struct mdss_dsi_ctrl_pdata *ctrl,
 		/*
 		 * Clear out any phy errors prior to exiting ULPS
 		 * This fixes certain instances where phy does not exit
-		 * ULPS cleanly.
+		 * ULPS cleanly. Also, do not print error during such cases.
 		 */
-		mdss_dsi_dln0_phy_err(ctrl);
+		mdss_dsi_dln0_phy_err(ctrl, false);
 
 		/*
 		 * ULPS Exit Request
@@ -1382,7 +1381,20 @@ static int mdss_dsi_clk_ctrl_sub(struct mdss_dsi_ctrl_pdata *ctrl,
 		}
 	} else {
 		if (clk_type & DSI_LINK_CLKS) {
-			mdss_dsi_ulps_config(ctrl, 1);
+			/*
+			 * If ULPS feature is enabled, enter ULPS first.
+			 * If ULPS during suspend is not enabled, no need
+			 * to enable ULPS when turning off the clocks
+			 * while blanking the panel.
+			 */
+			if (pdata->panel_info.blank_state ==
+				MDSS_PANEL_BLANK_BLANK) {
+				if (pdata->panel_info.ulps_suspend_enabled)
+					mdss_dsi_ulps_config(ctrl, 1);
+			} else if (mdss_dsi_ulps_feature_enabled(pdata)) {
+				mdss_dsi_ulps_config(ctrl, 1);
+			}
+
 			mdss_dsi_link_clk_stop(ctrl);
 		}
 		if (clk_type & DSI_BUS_CLKS) {

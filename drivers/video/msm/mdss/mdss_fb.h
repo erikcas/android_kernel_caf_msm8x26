@@ -37,11 +37,14 @@
 #define WAIT_MAX_FENCE_TIMEOUT (WAIT_FENCE_FIRST_TIMEOUT + \
 					WAIT_FENCE_FINAL_TIMEOUT)
 #define WAIT_MIN_FENCE_TIMEOUT  (1)
-/* Display op timeout should be greater than the total timeout but not
- * unreasonably large. Set to 1s more than first wait + final wait which
- * are already quite long and proceed without any further waits. */
+/*
+ * Display op timeout should be greater than total time it can take for
+ * a display thread to commit one frame. One of the largest time consuming
+ * activity performed by display thread is waiting for fences. So keeping
+ * that as a reference and add additional 20s to sustain system holdups.
+ */
 #define WAIT_DISP_OP_TIMEOUT (WAIT_FENCE_FIRST_TIMEOUT + \
-		WAIT_FENCE_FINAL_TIMEOUT + MSEC_PER_SEC)
+		WAIT_FENCE_FINAL_TIMEOUT + (20 * MSEC_PER_SEC))
 
 #ifndef MAX
 #define  MAX(x, y) (((x) > (y)) ? (x) : (y))
@@ -202,8 +205,10 @@ struct msm_mdp_interface {
 	int (*lut_update)(struct msm_fb_data_type *mfd, struct fb_cmap *cmap);
 	int (*do_histogram)(struct msm_fb_data_type *mfd,
 				struct mdp_histogram *hist);
+	int (*stop_histogram)(struct msm_fb_data_type *mfd);
 	int (*ad_calc_bl)(struct msm_fb_data_type *mfd, int bl_in,
 		int *bl_out, bool *bl_out_notify);
+	int (*ad_shutdown_cleanup)(struct msm_fb_data_type *mfd);
 	int (*panel_register_done)(struct mdss_panel_data *pdata);
 	u32 (*fb_stride)(u32 fb_index, u32 xres, int bpp);
 	int (*splash_init_fnc)(struct msm_fb_data_type *mfd);
@@ -275,6 +280,7 @@ struct msm_fb_data_type {
 	int ext_ad_ctrl;
 	u32 ext_bl_ctrl;
 	u32 calib_mode;
+	u32 calib_mode_bl;
 	u32 ad_bl_level;
 	u32 bl_level;
 	u32 bl_scale;
@@ -414,4 +420,5 @@ int mdss_fb_do_ioctl(struct fb_info *info, unsigned int cmd,
 		     unsigned long arg);
 int mdss_fb_compat_ioctl(struct fb_info *info, unsigned int cmd,
 			 unsigned long arg);
+void mdss_fb_report_panel_dead(struct msm_fb_data_type *mfd);
 #endif /* MDSS_FB_H */

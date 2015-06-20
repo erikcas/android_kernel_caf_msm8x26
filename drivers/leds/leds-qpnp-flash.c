@@ -37,6 +37,7 @@
 #define FLASH_LED_TMR_CTRL(base)				(base + 0x48)
 #define FLASH_HEADROOM(base)					(base + 0x4A)
 #define	FLASH_STARTUP_DELAY(base)				(base + 0x4B)
+#define FLASH_MASK_ENABLE(base)					(base + 0x4C)
 #define FLASH_VREG_OK_FORCE(base)				(base + 0x4F)
 #define FLASH_FAULT_DETECT(base)				(base + 0x51)
 #define	FLASH_THERMAL_DRATE(base)				(base + 0x52)
@@ -63,6 +64,7 @@
 #define FLASH_CURRENT_RAMP_MASK					0xBF
 #define FLASH_VPH_PWR_DROOP_MASK				0xF3
 #define FLASH_LED_HDRM_SNS_ENABLE_MASK				0x81
+#define	FLASH_MASK_MODULE_CONTRL_MASK				0xE0
 
 #define FLASH_LED_TRIGGER_DEFAULT				"none"
 #define FLASH_LED_HEADROOM_DEFAULT_MV				500
@@ -92,6 +94,7 @@
 #define	FLASH_LED_VPH_DROOP_THRESHOLD_DIVIDER			100
 #define FLASH_LED_HDRM_SNS_ENABLE				0x81
 #define	FLASH_LED_UA_PER_MA					1000
+#define	FLASH_LED_MASK_MODULE_MASK2_ENABLE			0x20
 
 #define FLASH_UNLOCK_SECURE					0xA5
 #define FLASH_LED_TORCH_ENABLE					0x00
@@ -208,9 +211,6 @@ qpnp_flash_led_get_max_avail_current(struct flash_node_data *flash_node,
 	union power_supply_propval prop;
 	int max_curr_avail_ma;
 	int rc;
-
-	if (!led->battery_psy)
-		led->battery_psy = power_supply_get_by_name("battery");
 
 	if (led->battery_psy) {
 		rc = led->battery_psy->get_property(led->battery_psy,
@@ -494,6 +494,7 @@ qpnp_flash_led_get_peripheral_type(struct qpnp_flash_led *led)
 static int qpnp_flash_led_module_disable(struct qpnp_flash_led *led,
 				struct flash_node_data *flash_node)
 {
+	union power_supply_propval psy_prop;
 	int rc;
 	u8 val, tmp;
 
@@ -536,6 +537,18 @@ static int qpnp_flash_led_module_disable(struct qpnp_flash_led *led,
 			dev_err(&led->spmi_dev->dev, "Module disable failed\n");
 			return -EINVAL;
 		}
+
+		if (led->battery_psy) {
+			psy_prop.intval = false;
+			rc = led->battery_psy->set_property(led->battery_psy,
+						POWER_SUPPLY_PROP_FLASH_ACTIVE,
+								&psy_prop);
+			if (rc) {
+				dev_err(&led->spmi_dev->dev,
+					"Failed to setup OTG pulse skip enable\n");
+				return -EINVAL;
+			}
+		}
 	} else {
 		rc = qpnp_led_masked_write(led->spmi_dev,
 			FLASH_MODULE_ENABLE_CTRL(led->base),
@@ -560,6 +573,7 @@ static void qpnp_flash_led_work(struct work_struct *work)
 				struct flash_node_data, work);
 	struct qpnp_flash_led *led =
 			dev_get_drvdata(&flash_node->spmi_dev->dev);
+	union power_supply_propval psy_prop;
 	int rc, brightness = flash_node->cdev.brightness;
 	int max_curr_avail_ma;
 	u8 val;
@@ -654,6 +668,24 @@ static void qpnp_flash_led_work(struct work_struct *work)
 			goto exit_flash_led_work;
 		}
 	} else if (flash_node->type == FLASH) {
+		if (!led->battery_psy)
+			led->battery_psy = power_supply_get_by_name("battery");
+		if (!led->battery_psy) {
+			dev_err(&led->spmi_dev->dev,
+				"Failed to get battery power supply\n");
+			goto exit_flash_led_work;
+		}
+
+		psy_prop.intval = true;
+		rc = led->battery_psy->set_property(led->battery_psy,
+						POWER_SUPPLY_PROP_FLASH_ACTIVE,
+								&psy_prop);
+		if (rc) {
+			dev_err(&led->spmi_dev->dev,
+				"Failed to setup OTG pulse skip enable\n");
+			goto exit_flash_led_work;
+		}
+
 		if (led->pdata->power_detect_en) {
 			max_curr_avail_ma =
 				qpnp_flash_led_get_max_avail_current
@@ -872,6 +904,14 @@ static int qpnp_flash_led_init_settings(struct qpnp_flash_led *led)
 	if (rc) {
 		dev_err(&led->spmi_dev->dev,
 					"Fault detect reg write failed\n");
+		return rc;
+	}
+
+	rc = qpnp_led_masked_write(led->spmi_dev, FLASH_MASK_ENABLE(led->base),
+				FLASH_MASK_MODULE_CONTRL_MASK,
+				FLASH_LED_MASK_MODULE_MASK2_ENABLE);
+	if (rc) {
+		dev_err(&led->spmi_dev->dev, "Mask module enable failed\n");
 		return rc;
 	}
 
