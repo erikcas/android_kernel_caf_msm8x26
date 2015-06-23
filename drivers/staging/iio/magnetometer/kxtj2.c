@@ -1159,7 +1159,27 @@ static struct i2c_driver yas_driver = {
 	.remove		= yas_remove,
 	.id_table	= yas_id,
 };
-module_i2c_driver(yas_driver);
+
+extern uint8_t g_iio_compass_product_id;
+static int __init yas_initialize(void)
+{
+	if(g_iio_compass_product_id==2)
+	return i2c_add_driver(&yas_driver);
+	else
+	{
+		printk("yas_initialize: yas_kionix_accel not installed, compass=%d---\n", g_iio_compass_product_id);
+	       return 0;
+	}
+}
+
+static void __exit yas_terminate(void)
+{
+	if(g_iio_compass_product_id==2)
+	i2c_del_driver(&yas_driver);
+}
+
+module_init(yas_initialize);
+module_exit(yas_terminate);
 
 MODULE_DESCRIPTION("Kionix KXTJ2 I2C driver");
 MODULE_LICENSE("GPL v2");

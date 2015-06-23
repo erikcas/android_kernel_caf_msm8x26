@@ -736,6 +736,8 @@ static int yas_ext(int32_t cmd, void *p)
 	return YAS_ERROR_ARG;
 }
 
+uint8_t g_iio_compass_product_id=0;
+
 static int yas_init(void)
 {
 	int i, rt;
@@ -749,6 +751,7 @@ static int yas_init(void)
 		return YAS_ERROR_DEVICE_COMMUNICATION;
 	}
 	driver.dev_id = data;
+	g_iio_compass_product_id = driver.dev_id;
 	if (driver.dev_id != YAS532_DEVICE_ID) {
 		driver.cbk.device_close(YAS_TYPE_MAG);
 		return YAS_ERROR_CHIP_ID;
@@ -1645,8 +1648,19 @@ static struct i2c_driver yas_driver = {
 	.remove		= yas_remove,
 	.id_table	= yas_id,
 };
-module_i2c_driver(yas_driver);
 
+static int __init yas_initialize(void)
+{
+	return i2c_add_driver(&yas_driver);
+}
+
+static void __exit yas_terminate(void)
+{
+	i2c_del_driver(&yas_driver);
+}
+
+module_init(yas_initialize);
+module_exit(yas_terminate);
 
 MODULE_DESCRIPTION("Yamaha YAS532 I2C driver");
 MODULE_LICENSE("GPL v2");
