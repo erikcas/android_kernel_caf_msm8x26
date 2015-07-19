@@ -29,7 +29,6 @@
 /* Use 'e' as magic number */
 #define ECOMPASS_IOM			'e'
 
-#define KitKat
 
 /* IOCTLs for ECOMPASS device */
 #define ECOMPASS_IOC_SET_MODE		_IOW(ECOMPASS_IOM, 0x00, short)
@@ -42,10 +41,8 @@
 #define ECOMPASS_IOC_GET_MFLAG		_IOR(ECOMPASS_IOM, 0x13, short)
 #define ECOMPASS_IOC_SET_OFLAG		_IOW(ECOMPASS_IOM, 0x14, short)
 #define ECOMPASS_IOC_GET_OFLAG		_IOR(ECOMPASS_IOM, 0x15, short)
-#ifdef KitKat
 #define ECOMPASS_IOC_SET_GRVFLAG	_IOW(ECOMPASS_IOM, 0x16, short)
 #define ECOMPASS_IOC_GET_GRVFLAG	_IOR(ECOMPASS_IOM, 0x17, short)
-#endif
 
 #define ECOMPASS_IOC_SET_APARMS		_IOW(ECOMPASS_IOM, 0x20, int[4])
 #define ECOMPASS_IOC_GET_APARMS		_IOR(ECOMPASS_IOM, 0x21, int[4])

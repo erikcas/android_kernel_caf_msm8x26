@@ -37,11 +37,7 @@
 
 static int ecs_ctrl_open(struct inode *inode, struct file *file);
 static int ecs_ctrl_release(struct inode *inode, struct file *file);
-#ifdef KitKat
 static long ecs_ctrl_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
-#else
-static int ecs_ctrl_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
-#endif
 static DECLARE_WAIT_QUEUE_HEAD(open_wq);
 
 static atomic_t	open_count;
@@ -51,9 +47,7 @@ static atomic_t	reserve_open_flag;
 static atomic_t	a_flag;
 static atomic_t	m_flag;
 static atomic_t	o_flag;
-#ifdef KitKat
 static atomic_t	grv_flag;
-#endif
 
 static short ecompass_delay = 0;
 
@@ -107,11 +101,7 @@ static int ecs_ctrl_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
-#ifdef KitKat
 static long ecs_ctrl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
-#else
-static int ecs_ctrl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
-#endif
 {
 	void __user *pa = (void __user *)arg;
 	short flag;
@@ -174,7 +164,6 @@ static int ecs_ctrl_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 		if (copy_to_user(pa, &flag, sizeof(flag)))
 			return -EFAULT;
 		break;
-  #ifdef KitKat
 	case ECOMPASS_IOC_SET_GRVFLAG:
 		if (copy_from_user(&flag, pa, sizeof(flag)))
 			return -EFAULT;
@@ -187,7 +176,6 @@ static int ecs_ctrl_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 		if (copy_to_user(pa, &flag, sizeof(flag)))
 			return -EFAULT;
 		break;
-  #endif
 
 	case ECOMPASS_IOC_SET_APARMS:
 		if (copy_from_user(parms, pa, sizeof(parms)))
@@ -274,7 +262,6 @@ static int ecs_ctrl_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 			input_report_abs(ecs_data_device, ABS_RUDDER, ypr[11]);
 		}
 
-    #ifdef KitKat
 		/* Report geomagnetic rotation vector information */
 		if (atomic_read(&grv_flag)) {
 			input_report_abs(ecs_data_device, ABS_HAT1X, ypr[12]);
@@ -283,7 +270,6 @@ static int ecs_ctrl_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 			input_report_abs(ecs_data_device, ABS_HAT2Y, ypr[15]);
       input_report_abs(ecs_data_device, ABS_HAT3X, ypr[16]);
 		}
-    #endif
 
 		input_sync(ecs_data_device);
 		break;
@@ -363,7 +349,6 @@ static int __init ecompass_init(void)
 	/* orientation status, 0 ~ 3 */
 	input_set_abs_params(ecs_data_device, ABS_RUDDER, 
 		0, 100, 0, 0);
-  #ifdef KitKat
 	/* 32768 == 1(cos(pi)) */
 	/* q1, -1 ~ 1 */
 	input_set_abs_params(ecs_data_device, ABS_HAT1X, 
@@ -380,7 +365,6 @@ static int __init ecompass_init(void)
 	/* geomagnetic rotation vector status, 0 ~ 3 */
   input_set_abs_params(ecs_data_device, ABS_HAT3X,
 		0, 100, 0, 0);
-  #endif
 
 	ecs_data_device->name = ECS_DATA_DEV_NAME;
 	res = input_register_device(ecs_data_device);
