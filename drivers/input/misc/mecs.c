@@ -18,6 +18,7 @@
  */
 
 #include <linux/interrupt.h>
+#include <linux/module.h>
 #include <linux/i2c.h>
 #include <linux/slab.h>
 #include <linux/miscdevice.h>
@@ -26,9 +27,8 @@
 #include <linux/workqueue.h>
 #include <linux/freezer.h>
 #include <asm/uaccess.h>
-#include <linux/module.h>
 
-#include "mecs.h"
+#include <linux/input/mecs.h>
 
 #define DEBUG			0
 
@@ -37,8 +37,11 @@
 
 static int ecs_ctrl_open(struct inode *inode, struct file *file);
 static int ecs_ctrl_release(struct inode *inode, struct file *file);
+#ifdef KitKat
+static long ecs_ctrl_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
+#else
 static int ecs_ctrl_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
-
+#endif
 static DECLARE_WAIT_QUEUE_HEAD(open_wq);
 
 static atomic_t	open_count;
@@ -48,6 +51,9 @@ static atomic_t	reserve_open_flag;
 static atomic_t	a_flag;
 static atomic_t	m_flag;
 static atomic_t	o_flag;
+#ifdef KitKat
+static atomic_t	grv_flag;
+#endif
 
 static short ecompass_delay = 0;
 
@@ -101,26 +107,35 @@ static int ecs_ctrl_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
+#ifdef KitKat
 static long ecs_ctrl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+#else
+static int ecs_ctrl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+#endif
 {
 	void __user *pa = (void __user *)arg;
 	short flag;
 	short delay;
 	int parms[4];
-	int ypr[12];
+        int ypr[17];
 
 	switch (cmd) {
 	case ECOMPASS_IOC_SET_MODE:
 		break;
 	case ECOMPASS_IOC_SET_DELAY:
-		if (copy_from_user(&delay, pa, sizeof(delay)))
-			return -EFAULT;
+		if (copy_from_user(&delay, pa, sizeof(delay))){
+        printk("MEMSIC mecs SET_DELAY_FAIL %d", ecompass_delay);
+        return -EFAULT;
+    }
 		ecompass_delay = delay;
+		printk("MEMSIC mecs ECOMPASS_IOC_SET_DELAY %d", ecompass_delay);
 		break;
 	case ECOMPASS_IOC_GET_DELAY:
 		delay = ecompass_delay;
-		if (copy_to_user(pa, &delay, sizeof(delay)))
-			return -EFAULT;
+		if (copy_to_user(pa, &delay, sizeof(delay))){
+        printk("MEMSIC mecs GET_DELAY_FAIL %d", ecompass_delay);
+        return -EFAULT;
+    }
 		break;
 
 	case ECOMPASS_IOC_SET_AFLAG:
@@ -159,6 +174,20 @@ static long ecs_ctrl_ioctl(struct file *file, unsigned int cmd, unsigned long ar
 		if (copy_to_user(pa, &flag, sizeof(flag)))
 			return -EFAULT;
 		break;
+  #ifdef KitKat
+	case ECOMPASS_IOC_SET_GRVFLAG:
+		if (copy_from_user(&flag, pa, sizeof(flag)))
+			return -EFAULT;
+		if (flag < 0 || flag > 1)
+			return -EINVAL;
+		atomic_set(&grv_flag, flag);
+		break;
+	case ECOMPASS_IOC_GET_GRVFLAG:
+		flag = atomic_read(&grv_flag);
+		if (copy_to_user(pa, &flag, sizeof(flag)))
+			return -EFAULT;
+		break;
+  #endif
 
 	case ECOMPASS_IOC_SET_APARMS:
 		if (copy_from_user(parms, pa, sizeof(parms)))
@@ -245,6 +274,17 @@ static long ecs_ctrl_ioctl(struct file *file, unsigned int cmd, unsigned long ar
 			input_report_abs(ecs_data_device, ABS_RUDDER, ypr[11]);
 		}
 
+    #ifdef KitKat
+		/* Report geomagnetic rotation vector information */
+		if (atomic_read(&grv_flag)) {
+			input_report_abs(ecs_data_device, ABS_HAT1X, ypr[12]);
+			input_report_abs(ecs_data_device, ABS_HAT1Y, ypr[13]);
+			input_report_abs(ecs_data_device, ABS_HAT2X, ypr[14]);
+			input_report_abs(ecs_data_device, ABS_HAT2Y, ypr[15]);
+      input_report_abs(ecs_data_device, ABS_HAT3X, ypr[16]);
+		}
+    #endif
+
 		input_sync(ecs_data_device);
 		break;
 
@@ -323,6 +363,24 @@ static int __init ecompass_init(void)
 	/* orientation status, 0 ~ 3 */
 	input_set_abs_params(ecs_data_device, ABS_RUDDER, 
 		0, 100, 0, 0);
+  #ifdef KitKat
+	/* 32768 == 1(cos(pi)) */
+	/* q1, -1 ~ 1 */
+	input_set_abs_params(ecs_data_device, ABS_HAT1X, 
+		-32768, 32768, 0, 0);
+	/* q1, -1 ~ 1 */
+	input_set_abs_params(ecs_data_device, ABS_HAT1Y, 
+		-32768, 32768, 0, 0);
+	/* q1, -1 ~ 1 */
+	input_set_abs_params(ecs_data_device, ABS_HAT2X, 
+		-32768, 32768, 0, 0);
+  /* geomagnetic rotation vector param 3, -1 ~ 1 (cos) */
+	input_set_abs_params(ecs_data_device, ABS_HAT2Y, 
+        -1, 1, 0, 0);
+	/* geomagnetic rotation vector status, 0 ~ 3 */
+  input_set_abs_params(ecs_data_device, ABS_HAT3X,
+		0, 100, 0, 0);
+  #endif
 
 	ecs_data_device->name = ECS_DATA_DEV_NAME;
 	res = input_register_device(ecs_data_device);

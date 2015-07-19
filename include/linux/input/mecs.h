@@ -29,6 +29,8 @@
 /* Use 'e' as magic number */
 #define ECOMPASS_IOM			'e'
 
+#define KitKat
+
 /* IOCTLs for ECOMPASS device */
 #define ECOMPASS_IOC_SET_MODE		_IOW(ECOMPASS_IOM, 0x00, short)
 #define ECOMPASS_IOC_SET_DELAY		_IOW(ECOMPASS_IOM, 0x01, short)
@@ -40,6 +42,10 @@
 #define ECOMPASS_IOC_GET_MFLAG		_IOR(ECOMPASS_IOM, 0x13, short)
 #define ECOMPASS_IOC_SET_OFLAG		_IOW(ECOMPASS_IOM, 0x14, short)
 #define ECOMPASS_IOC_GET_OFLAG		_IOR(ECOMPASS_IOM, 0x15, short)
+#ifdef KitKat
+#define ECOMPASS_IOC_SET_GRVFLAG	_IOW(ECOMPASS_IOM, 0x16, short)
+#define ECOMPASS_IOC_GET_GRVFLAG	_IOR(ECOMPASS_IOM, 0x17, short)
+#endif
 
 #define ECOMPASS_IOC_SET_APARMS		_IOW(ECOMPASS_IOM, 0x20, int[4])
 #define ECOMPASS_IOC_GET_APARMS		_IOR(ECOMPASS_IOM, 0x21, int[4])
@@ -51,8 +57,10 @@
 #define ECOMPASS_IOC_GET_OPARMS_PITCH	_IOR(ECOMPASS_IOM, 0x27, int[4])
 #define ECOMPASS_IOC_SET_OPARMS_ROLL	_IOW(ECOMPASS_IOM, 0x28, int[4])
 #define ECOMPASS_IOC_GET_OPARMS_ROLL	_IOR(ECOMPASS_IOM, 0x29, int[4])
-
-#define ECOMPASS_IOC_SET_YPR		_IOW(ECOMPASS_IOM, 0x30, int[12])
+///!!!+++ Josh Hsu@2014/04/18
+//#define ECOMPASS_IOC_SET_YPR		_IOW(ECOMPASS_IOM, 0x30, int[16])
+#define ECOMPASS_IOC_SET_YPR		_IOW(ECOMPASS_IOM, 0x30, int[17])
+///!!!---
 
 
 #endif /* __ECOMPASS_H__ */
