@@ -1746,7 +1746,6 @@ static int kionix_accel_probe(struct i2c_client *client,
 
 	struct kionix_accel_driver *acceld;
 	int err;
-	struct proc_dir_entry *proc_dir, *proc_entry;
 
 	if(accel_pdata->accel_irq_use_drdy)
 	{
@@ -1915,15 +1914,6 @@ static int kionix_accel_probe(struct i2c_client *client,
 	acceld->kionix_accel_update_odr(acceld, acceld->poll_interval);
 	kionix_accel_update_direction(acceld);
 
-	proc_dir = proc_mkdir("sensors", NULL);
-	if (proc_dir == NULL)
-		KMSGERR(&client->dev, "failed to create /proc/sensors\n");
-	else {
-		proc_entry = create_proc_entry( "accelinfo", 0644, proc_dir);
-		if (proc_entry == NULL)
-			KMSGERR(&client->dev, "failed to create /proc/cpu/accelinfo\n");
-	}
-
 	acceld->accel_workqueue = create_workqueue("Kionix Accel Workqueue");
 	INIT_DELAYED_WORK(&acceld->accel_work, kionix_accel_work);
 	init_waitqueue_head(&acceld->wqh_suspend);
@@ -2028,7 +2018,8 @@ static struct i2c_driver kionix_accel_driver = {
 	.remove		= kionix_accel_remove,
 	.id_table	= kionix_accel_id,
 };
-uint8_t g_compass_product_id=0;
+
+extern uint8_t g_compass_product_id;
 static int __init kionix_accel_init(void)
 {
     printk("[CCI]kionix_accel_init: compass pid=0x%02x\n", g_compass_product_id);
