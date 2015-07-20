@@ -736,6 +736,7 @@ static int yas_ext(int32_t cmd, void *p)
 	return YAS_ERROR_ARG;
 }
 
+uint8_t g_iio_compass_product_id=0;
 static int yas_init(void)
 {
 	int i, rt;
@@ -749,6 +750,7 @@ static int yas_init(void)
 		return YAS_ERROR_DEVICE_COMMUNICATION;
 	}
 	driver.dev_id = data;
+	g_iio_compass_product_id = driver.dev_id;
 	if (driver.dev_id != YAS532_DEVICE_ID) {
 		driver.cbk.device_close(YAS_TYPE_MAG);
 		return YAS_ERROR_CHIP_ID;
