@@ -475,12 +475,16 @@ err_vdd_disable:
 	mutex_unlock(&memsic->ecompass_lock);
 	return rc;
 }
+
+uint8_t g_compass_product_id=0;
+
 static int mmc3416x_check_device(struct mmc3416x_data *memsic)
 {
 	unsigned int data;
 	int rc;
 
 	rc = regmap_read(memsic->regmap, MMC3416X_REG_PRODUCTID_1, &data);
+
 	if (rc) {
 		dev_err(&memsic->i2c->dev, "read reg %d failed.(%d)\n",
 				MMC3416X_REG_DS, rc);
@@ -491,6 +495,7 @@ static int mmc3416x_check_device(struct mmc3416x_data *memsic)
 	if (data != MMC3416X_PRODUCT_ID)
 		return -ENODEV;
 
+	g_compass_product_id = MMC3416X_PRODUCT_ID;
 	return 0;
 }
 

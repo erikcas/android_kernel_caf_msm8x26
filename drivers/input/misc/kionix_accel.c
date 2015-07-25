@@ -36,6 +36,10 @@
 #include <linux/irq.h>
 #include <linux/regulator/consumer.h>
 
+/* mmc3416x present or not */
+#include "mmc3416x.h"
+#define MMC3416X_PRODUCT_ID     0x06
+
 /* Debug Message Flags */
 #define KIONIX_KMSG_ERR	1	/* Print kernel debug message for error */
 #define KIONIX_KMSG_INF	1	/* Print kernel debug message for info */
@@ -1919,7 +1923,7 @@ static int kionix_accel_probe(struct i2c_client *client,
 	if (proc_dir == NULL)
 		KMSGERR(&client->dev, "failed to create /proc/sensors\n");
 	else {
-		proc_entry = create_proc_entry( "accelinfo", 0644, proc_dir);
+		proc_entry = proc_mkdir("accelinfo", proc_dir);
 		if (proc_entry == NULL)
 			KMSGERR(&client->dev, "failed to create /proc/cpu/accelinfo\n");
 	}
@@ -2018,6 +2022,30 @@ static struct of_device_id kionix_accel_dts_table[] = {
 		{ },
 };
 
+#define MMC3416X_I2C_ADDR 0x30
+uint8_t mmc3416x_product_id=0;
+
+struct i2c_board_info info = {
+	.type = "mmc3416x",
+	.addr = MMC3416X_I2C_ADDR,
+};
+
+static int mmc3416x_detect(struct i2c_client *client,
+                          struct i2c_board_info *info)
+{
+        struct i2c_adapter *adapter = client->adapter;
+        int product_id;
+        if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_READ_WORD_DATA))
+                return -ENODEV;
+        product_id = i2c_smbus_read_byte_data(client, MMC3416X_REG_PRODUCTID_1);
+        if (!product_id == MMC3416X_PRODUCT_ID)
+                return -ENODEV;
+	mmc3416x_product_id = product_id;
+
+        strlcpy(info->type, "mmc3416x", I2C_NAME_SIZE);
+        return 0;
+}
+
 static struct i2c_driver kionix_accel_driver = {
 	.driver = {
 		.name	= KIONIX_ACCEL_NAME,
@@ -2027,12 +2055,13 @@ static struct i2c_driver kionix_accel_driver = {
 	.probe		= kionix_accel_probe,
 	.remove		= kionix_accel_remove,
 	.id_table	= kionix_accel_id,
+	.detect		= mmc3416x_detect,
 };
-uint8_t g_compass_product_id=0;
+
 static int __init kionix_accel_init(void)
 {
-    printk("[CCI]kionix_accel_init: compass pid=0x%02x\n", g_compass_product_id);
-    if(g_compass_product_id==6)
+    printk("[CCI]kionix_accel_init: compass pid=0x%02x\n", mmc3416x_product_id);
+    if(mmc3416x_product_id==6)
 	return i2c_add_driver(&kionix_accel_driver);
     else
       return 0;
@@ -2041,7 +2070,7 @@ module_init(kionix_accel_init);
 
 static void __exit kionix_accel_exit(void)
 {
-	if(g_compass_product_id==6)
+	if(mmc3416x_product_id==6)
 	i2c_del_driver(&kionix_accel_driver);
 }
 module_exit(kionix_accel_exit);
